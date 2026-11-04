@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-Prepare a small, reproducible evaluation set for SafeDiff.
+Build a small, labelled evaluation set for the SafeDiff adaptive-acceleration prototype.
 
-This is an EVALUATION-only script: it does not train or fine-tune LLaDA.
-It creates balanced harmful/benign subsets from public safety benchmarks.
+Evaluation only: no model is trained or fine-tuned.
+
+Risk tiers:
+  LOW    = ordinary safe prompts
+  MEDIUM = benign medical prompts (benign, but higher consequence if mishandled)
+  HIGH   = unsafe/adversarial prompts
 """
 
 import argparse
@@ -14,87 +18,109 @@ from pathlib import Path
 from datasets import load_dataset
 
 
-def take_balanced(rows, n_per_label, seed=42):
-    rng = random.Random(seed)
-    groups = {}
-    for row in rows:
-        label = row["label"]
-        groups.setdefault(label, []).append(row)
-    out = []
-    for label in sorted(groups):
-        items = groups[label][:]
-        rng.shuffle(items)
-        out.extend(items[:n_per_label])
-    rng.shuffle(out)
-    return out
+def sample_rows(rows, n, seed):
+    rows = list(rows)
+    random.Random(seed).shuffle(rows)
+    return rows[:n]
 
 
-def load_wildjailbreak(n_per_label):
-    # Compact HF mirror used for a quick evaluation smoke test.
-    ds = load_dataset("walledai/WildJailbreak", split="train")
-    rows = []
-    for r in ds:
-        label = str(r.get("label", "")).lower()
-        prompt = r.get("prompt", "")
-        if not prompt:
-            continue
-        if "benign" in label:
-            y = "benign"
-        elif "harmful" in label:
-            y = "harmful"
-        else:
-            continue
-        rows.append({"text": prompt, "label": y, "source": "WildJailbreak"})
-    return take_balanced(rows, n_per_label)
-
-
-def load_xstest():
-    # XSTest is primarily a safe/unsafe contrast set for false-refusal evaluation.
+def load_xstest(n, seed):
     ds = load_dataset("Paul/XSTest", split="train")
-    rows = []
+    safe, unsafe = [], []
+
     for r in ds:
-        prompt = r.get("prompt") or r.get("text") or ""
+        text = (r.get("prompt") or "").strip()
         label = str(r.get("label", "")).lower()
-        if not prompt:
+        if not text:
             continue
-        if label in {"safe", "benign"}:
-            y = "benign"
-        elif label in {"unsafe", "harmful"}:
-            y = "harmful"
-        else:
+        if label == "safe":
+            safe.append({
+                "text": text,
+                "source": "XSTest",
+                "source_label": "safe",
+                "risk_tier": "LOW",
+            })
+        elif label == "unsafe":
+            unsafe.append({
+                "text": text,
+                "source": "XSTest",
+                "source_label": "unsafe",
+                "risk_tier": "HIGH",
+            })
+
+    return sample_rows(safe, n, seed), sample_rows(unsafe, n, seed + 1)
+
+
+def load_telemedicine(n, seed):
+    ds = load_dataset(
+        "alpha-max/telemedicine_adverserial_dataset",
+        split="train",
+    )
+    safe, adversarial = [], []
+
+    for r in ds:
+        text = (r.get("prompt") or "").strip()
+        if not text:
             continue
-        rows.append({"text": prompt, "label": y, "source": "XSTest"})
-    return rows
+        try:
+            label = int(r.get("label"))
+        except (TypeError, ValueError):
+            continue
+
+        rec = {
+            "text": text,
+            "source": "Telemedicine-Adversarial",
+            "source_label": str(label),
+            "category": r.get("category"),
+        }
+
+        if label == 0:
+            # Benign medical != malicious. We assign MEDIUM because
+            # medical requests are higher-consequence workloads.
+            rec["risk_tier"] = "MEDIUM"
+            safe.append(rec)
+        elif label == 1:
+            rec["risk_tier"] = "HIGH"
+            adversarial.append(rec)
+
+    return (
+        sample_rows(safe, n, seed + 2),
+        sample_rows(adversarial, n, seed + 3),
+    )
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--wild-n", type=int, default=10)
-    ap.add_argument("--xstest-n", type=int, default=10)
+    ap.add_argument("--n", type=int, default=10,
+                    help="Examples per class/source; default 10.")
     ap.add_argument("--out", default="analysis/datasets/safediff_eval_smoke.json")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
-    rows = []
-    rows.extend(load_wildjailbreak(args.wild_n))
-    xstest = load_xstest()
-    if xstest:
-        rows.extend(take_balanced(xstest, args.xstest_n, args.seed))
+    x_safe, x_unsafe = load_xstest(args.n, args.seed)
+    med_safe, med_adv = load_telemedicine(args.n, args.seed)
 
-    # Stable IDs and explicit split metadata.
-    for i, r in enumerate(rows):
-        r["id"] = i
+    rows = x_safe + med_safe + x_unsafe + med_adv
+    random.Random(args.seed).shuffle(rows)
+
+    for i, row in enumerate(rows):
+        row["id"] = i
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
+    out.write_text(json.dumps(rows, indent=2, ensure_ascii=False),
+                    encoding="utf-8")
 
-    print(f"Wrote {len(rows)} examples -> {out}")
+    print("=" * 70)
+    print("SafeDiff ADAPTIVE-ACCELERATION SMOKE SET")
+    print("=" * 70)
+    print(f"Total: {len(rows)}")
+    for tier in ("LOW", "MEDIUM", "HIGH"):
+        print(f"{tier:7s}: {sum(r['risk_tier'] == tier for r in rows)}")
+    print()
     for source in sorted(set(r["source"] for r in rows)):
-        subset = [r for r in rows if r["source"] == source]
-        print(f"{source}: {len(subset)}")
-        for label in ("harmful", "benign"):
-            print(f"  {label}: {sum(r['label'] == label for r in subset)}")
+        print(f"{source}: {sum(r['source'] == source for r in rows)}")
+    print(f"\nWrote: {out}")
 
 
 if __name__ == "__main__":

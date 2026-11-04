@@ -12,6 +12,24 @@ import subprocess
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModel
 
+# Compatibility patch for LLaDA with newer Transformers
+import inspect
+import transformers.modeling_utils as _tu
+
+_original_tie_weights = getattr(_tu.PreTrainedModel, "tie_weights", None)
+
+def _llada_tie_weights_compat(self, *args, **kwargs):
+    original = getattr(self, "_llada_original_tie_weights", None)
+    if original is not None:
+        return original()
+    if _original_tie_weights is not None:
+        return _original_tie_weights(self)
+
+if not hasattr(_tu.PreTrainedModel, "all_tied_weights_keys"):
+    _tu.PreTrainedModel.all_tied_weights_keys = property(
+        lambda self: getattr(self, "_tied_weights_keys", None) or {}
+    )
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 from utility.generate_function_llada import generate_llada
 from defense_utils import Defender

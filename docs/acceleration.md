@@ -4,9 +4,8 @@ This entry point runs **LLaDA-8B-Instruct** with one of three fixed generation
 configurations. It accepts a raw user prompt, applies the checkpoint's chat
 template, and returns generated text plus measurements and source provenance.
 An explicit policy adapter maps `FAST` to `instant`, `NORMAL` to `fastdllm`,
-and `SAFE` to `llada`. It does not estimate risk, choose a policy from prompt
-content, or judge response safety. `SAFE` is a configuration name, not a safety
-guarantee.
+and `SAFE` to `llada`. The caller selects the policy; the adapter resolves it
+to a decoder before generation.
 
 | Policy | Mode | Decoder and fixed settings |
 |---|---|---|
@@ -18,16 +17,15 @@ All modes use batch size 1, temperature 0, the same model instance and tokenizer
 and a fixed output canvas. Default generation length is 256 tokens. Length must
 be a positive multiple of 32 for `instant` and `fastdllm`; `llada` accepts any
 positive integer. At length 256 the `instant` decoder has one full eight-block
-group; a shorter generation length uses a shorter group. The output reports
-remaining mask tokens instead of repairing them silently. These presets do not
-establish equivalent quality or safety.
+group; a shorter generation length uses a shorter group. Residual mask tokens
+are retained in the output and reported in the result.
 
 The LLaDA generator is copied unchanged from upstream commit
 `f51cb1731f5a40ba35c15e51b6b66b147e689f24`, with its MIT license and hashes recorded
 in `acceleration/vendor/llada_provenance.json`. The adapter forces
-`use_cache=False` and supplies no cached keys/values. It still uses the shared
-extended model also used by the accelerated modes; the complete model/decoder
-package is not byte-identical to the original LLaDA repository.
+`use_cache=False` and supplies no cached keys/values. All three decoders use the
+shared model implementation, which adds explicit-position attention/RoPE support
+for the accelerated paths.
 
 ## Inspect without a GPU
 
@@ -44,9 +42,9 @@ python -m unittest discover -s tests -p 'test_acceleration_contract.py' -v
 Importing `acceleration` and describing configurations do not import torch or
 load a model. Actual generation requires a CUDA GPU and compatible PyTorch,
 Transformers and NumPy packages. Use a dedicated environment for this entry
-point; it does not require the repository's older, broad `requirements_no_av.txt`
-environment. With a suitable CUDA PyTorch build already installed, install the
-small decoder dependency set:
+point. Its dependencies are listed separately from the repository's broader
+`requirements_no_av.txt` environment. With a suitable CUDA PyTorch build already
+installed, install the decoder dependencies:
 
 ```bash
 python -m pip install -r requirements_acceleration.txt
@@ -92,18 +90,16 @@ and `--mode` are mutually exclusive. Without either option, the default remains
 ID defaults to `GSAI-ML/LLaDA-8B-Instruct`; use `--allow-download` only when a
 download is intended, and `--revision <commit>` to select a fixed remote model
 revision. Local checkpoint paths are also supported. Runtime metadata records
-model revision when available and checkpoint metadata hashes; it does not hash
-every model-weight file.
+the model revision when available and hashes of checkpoint metadata files.
+Weight files are outside the backend's hashing scope.
 
 `compare` processes each prompt in the order `instant`, then `fastdllm`, with
 the same model/tokenizer instance, prompt formatting, system prompt, generation
 length and seed. `compare-all` adds `llada` as the third call and retains the
 accelerated modes' multiple-of-32 length requirement. Each call resets the seed.
-Shared seed and prompt do
-not imply identical answers across different decoders. This is a paired output
-runner, not a statistically controlled speed benchmark: order is fixed, and
-the first request includes lazy model loading. For a warm-call study, use the
-API below, load once in advance, and define warmups/repetitions/order explicitly.
+Calls execute in fixed order, and the first request includes lazy model loading.
+For a warm-call study, use the API below, load once in advance, and configure
+warmups, repetitions, and execution order in the experiment driver.
 
 Optional settings include `--device cuda:0`, `--dtype bfloat16`,
 `--system-prompt '...'`, and `--no-flash-attention`. The default dtype is
@@ -124,8 +120,7 @@ are validated before model loading.
 Other fields, including the source ID and existing labels, are retained as
 metadata; they do not control backend selection.
 
-The example file contains two benign smoke prompts. It is not a quality or
-safety benchmark.
+The example file contains two benign prompts for checking the runner.
 
 Each saved object has this structure:
 
@@ -152,8 +147,7 @@ retained and the command exits with code 1. A result with remaining masks is
 saved as `status: incomplete`, including its original text, token IDs and mask
 counts. All selected comparison modes and remaining inputs still run. A run with
 any incomplete result exits with code 2; a fully complete run exits with code
-0. A later exception takes precedence and exits with code 1. No incomplete
-samples are dropped or silently repaired.
+0. A later exception takes precedence and exits with code 1.
 
 The nested `generation` object includes:
 
@@ -163,9 +157,9 @@ The nested `generation` object includes:
   and verified packaged-source hashes. Sources are described in
   `acceleration/vendor/provenance.json`.
 - Actual observed forward calls (`nfe`), full versus cached calls, query
-  positions, and forward-shape counts. These are **not FLOPs**. Any analytic
-  main-matmul estimate in instant diagnostics is separately named and is not
-  a measured hardware FLOP count.
+  positions, and forward-shape counts. NFE counts model invocations; query
+  positions count evaluated token positions. Instant diagnostics separately
+  report an analytic main-matmul FLOP estimate.
 - CUDA peak allocated memory and the timing definitions below.
 - Checkpoint, tokenizer/template identity, package versions, GPU, dtype,
   attention implementation, and model-load duration in `runtime`.
@@ -176,14 +170,12 @@ tokenization, text decoding, evaluation, and caller file I/O.
 `request_seconds` also includes lazy loading when needed, tokenization, seed
 setup, and decoding. `model_was_loaded_before_request` and
 `load_seconds_this_request` distinguish cold and warm requests. Instant retains
-its existing diagnostics, so their cost remains included. Safety judges and
-controller overhead are absent from these two backend-only timings.
+its existing diagnostics, so their cost remains included. Caller-side scoring
+and policy-selection time are outside these backend timings.
 
 The decoder completes its fixed canvas and the displayed response uses only
 the token prefix before the first EOS/EOT. The full canvas and masks remain in
-the result for inspection. This entry point does not create unsafe-response
-rates, false-refusal rates, quality scores, or assertions that `instant` is
-safe for a particular request.
+the result for inspection. Task scoring is handled by the experiment code.
 
 ## Call from a controller
 
@@ -226,10 +218,8 @@ with LLaDABackend("/path/to/LLaDA-8B-Instruct") as backend:
 ```
 
 Policy names are case-sensitive. Unknown policies and invalid generation
-arguments are rejected before model loading; the adapter has no fallback or
-risk estimator. Evaluate the controller's decisions against paired quality and
-safety measurements before treating it as a validated policy. A larger nominal
-computation budget alone does not supply that validation.
+arguments are rejected before model loading. Risk estimation and policy
+selection remain caller responsibilities.
 
 The existing controller prototypes use this same mapping:
 
@@ -242,9 +232,9 @@ python -m analysis.adaptive_acceleration_prototype \
   --out-dir results/policy_trial
 ```
 
-The oracle prototype reads dataset risk labels; the interactive demo retains
-the existing exploratory Qwen guard-output heuristic. Neither introduces a new
-risk estimator. Generation outputs are saved incrementally and existing output
+The oracle prototype reads dataset risk labels; the interactive demo uses
+the existing exploratory Qwen guard-output heuristic. Generation outputs are
+saved incrementally and existing output
 files are refused. The demo supports `--output results/demo.jsonl`; without it,
 results go to the terminal. `analysis.prototype_controller` only displays the
 original hidden-score threshold's policy choices and does not run generation.
@@ -257,12 +247,12 @@ incremental persistence, preservation of failures and incomplete outputs,
 continuation after remaining masks, exact prompt preservation, and refusal to
 overwrite an output. The 19 contract tests also cover the three-policy mapping,
 unchanged legacy configurations, `compare` compatibility, `compare-all`, and
-validation before model loading. They do not execute or numerically validate
-the decoders. Three additional source/tiny-CPU tests in
+validation before model loading. These tests use mocked generation results.
+Three additional source/tiny-CPU tests in
 `tests/test_llada_decoder.py` check the original LLaDA source/license hashes,
 full-sequence forwards with one token transferred per step, and retention of
-the full budget even for EOS-like predictions. These tests use no 8B checkpoint.
-GPU smoke outputs and parity checks are reported separately with their actual
+the full budget even for EOS-like predictions. GPU smoke outputs and parity
+checks are reported separately with their actual
 checkpoint, environment and source revisions.
 
 The complete suite currently passes 42 tests, including six observer/cache
@@ -273,8 +263,8 @@ configuration preflight, failure persistence and output protection:
 python -m unittest discover -s tests -v
 ```
 
-The optional CUDA smoke uses a tiny randomly initialized shared model and a
-fixture tokenizer. It downloads no checkpoint:
+The optional CUDA smoke initializes a tiny shared model with random weights
+and uses a fixture tokenizer, so it requires no checkpoint download:
 
 ```bash
 python -m analysis.smoke_policy_backends --device cuda:0 --output policies-tiny-smoke.json
@@ -285,9 +275,7 @@ seven passing checks on an RTX 3090 Ti, PyTorch 2.6.0+cu124, Transformers 4.49.0
 float32, SDPA and eager execution. Two FAST/NORMAL/SAFE cycles reproduced tokens
 and NFE while retaining the same model object. At length 32, SAFE used 32 full
 forwards and zero cached calls; FAST and NORMAL each used one full plus 31 cached
-calls in this synthetic fixture. SAFE also passed at length 1. This checks
-integration and cache isolation, not 8B numerical parity, performance, quality,
-or safety.
+calls in this synthetic fixture. SAFE also passed at length 1.
 
 The original **two-mode**
 [2026-11-05 validation receipt](validation/acceleration-2026-11-05.json)
@@ -306,12 +294,12 @@ CUDA 12.4, Transformers 4.49.0, bfloat16 and SDPA. The checkpoint revision was
 - The command-line paired runner saved all 4 expected records. All 18 actual
   test generations completed without residual MASK tokens.
 
-These checks validate the tested implementation paths. They do not establish
-safety, benchmark accuracy, an equal-quality speedup, or equivalence for every
-possible prompt, dtype, attention implementation, or generation length.
-
 The [completed two-mode benchmark](benchmarks/acceleration-2026-11-05.md)
 separately records full GSM8K test-1319 and standard MBPP test-500 results at
-the earlier `dd10902` commit. It measures a speed/quality tradeoff, not an
-equal-quality or safety improvement. `SAFE`/`llada` has no full 8B benchmark
-results in that record.
+the earlier `dd10902` commit, including task accuracy and generation time.
+
+The CPU and tiny-CUDA tests cover integration behavior. The 8B token/NFE parity
+checks cover `instant` and `fastdllm` at the prompts, lengths, dtype, and attention
+implementation listed above. `SAFE`/`llada` has no 8B parity, task-quality, or
+performance measurements yet. Safety outcomes were not measured in these
+backend tests or benchmarks.

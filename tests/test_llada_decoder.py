@@ -50,8 +50,7 @@ class LLaDADecoderTests(unittest.TestCase):
                 self.inputs = []
 
             def __call__(self, tokens):
-                # Only a full input tensor is accepted. Cache/position arguments
-                # or sliced forwards would fail this deliberately small contract.
+                # Record full-sequence inputs for the decoder schedule check.
                 self.inputs.append(tokens.clone())
                 logits = torch.zeros((*tokens.shape, 16), dtype=torch.float32, device="cpu")
                 for position in range(tokens.shape[1]):

@@ -1,4 +1,4 @@
-"""Fixed generation presets and explicit policy names; no model imports."""
+"""Generation presets and policy-to-backend mapping."""
 
 MODES = ("instant", "fastdllm", "llada")
 POLICY_TO_MODE = {"FAST": "instant", "NORMAL": "fastdllm", "SAFE": "llada"}
@@ -6,7 +6,7 @@ POLICIES = tuple(POLICY_TO_MODE)
 
 
 def mode_for_policy(policy):
-    """Resolve a named preset; this mapping does not predict or certify safety."""
+    """Map a policy name to its generation backend."""
     if not isinstance(policy, str) or policy not in POLICY_TO_MODE:
         raise ValueError("policy must be one of: " + ", ".join(POLICIES))
     return POLICY_TO_MODE[policy]

@@ -1,8 +1,7 @@
-"""Run a fixed LLaDA generation mode or an explicitly selected policy name.
+"""Run LLaDA generation by mode or policy name.
 
-The module and input/output helpers use only the Python standard library.
-Model dependencies are imported by the backend only when generation starts.
-Policy names select presets; they do not predict risk or certify safety.
+Input/output helpers use the Python standard library. The backend imports
+model dependencies when generation starts.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ RUN_SCHEMA = "safediff.acceleration.run.v1"
 
 
 def extract_prompt(record: dict, *, location: str = "record") -> str:
-    """Accept the existing input schemas, refusing ambiguous or empty input."""
+    """Read a nonempty prompt from the supported input fields."""
     if not isinstance(record, dict):
         raise ValueError(f"{location}: expected a JSON object")
     values = {}
@@ -71,10 +70,10 @@ def load_records(*, input_path: str | None = None, prompt: str | None = None) ->
 
 
 class ResultWriter:
-    """Reserve a new output; persist each completed result before continuing.
+    """Create a new result file and save each completed record.
 
     JSON uses an atomic snapshot replacement. JSONL flushes and fsyncs each line.
-    Existing outputs are never silently overwritten or resumed.
+    Opening an existing output raises FileExistsError.
     """
 
     def __init__(self, output: str):
@@ -157,8 +156,7 @@ def run_jobs(args, records: list[dict], *, backend_factory=None) -> int:
     if backend_factory is None:
         from acceleration import LLaDABackend
         backend_factory = LLaDABackend
-    # Reserve the destination before any model loading, so an existing result
-    # cannot waste GPU time or be overwritten after generation.
+    # Open the output before loading the model to catch path conflicts early.
     writer = ResultWriter(args.output)
     backend = None
     run_id = uuid.uuid4().hex

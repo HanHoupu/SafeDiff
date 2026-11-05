@@ -2,14 +2,13 @@
 
 At the tested settings, `instant` generated responses 3.53× faster on GSM8K
 and 3.93× faster on MBPP than the integrated Fast-dLLM v1 dual-cache baseline,
-with substantially lower task accuracy. This is a measured speed/quality
-tradeoff, not an equal-quality speedup or a safety result.
+with lower task accuracy.
 
-## Frozen run
+## Run setup
 
 - SafeDiff commit: `dd10902b12fe2c89e02d9d766a7c2ab4f458aed5`, before the
-  three-policy adapter and vanilla `llada` mode were added. Only `instant` and
-  `fastdllm` were evaluated. `SAFE` has **no full LLaDA-8B benchmark results** here.
+  three-policy adapter and vanilla `llada` mode were added. Evaluation covered
+  `instant` and `fastdllm`; `SAFE` remains unevaluated on LLaDA-8B.
 - Model: `GSAI-ML/LLaDA-8B-Instruct`, checkpoint revision
   `08b83a6feb34df1a6011b80c3c00c7563e963b07`. Both modes used the same checkpoint,
   tokenizer, exact rendered prompt tokens, and shared extended model.
@@ -19,13 +18,13 @@ tradeoff, not an equal-quality speedup or a safety result.
 - `instant`: contiguous ALL8, K=8, block length 32, threshold 0.9, BERM mu 16,
   at most 64 forwards per group. `fastdllm`: the pinned official v1 dual-cache
   decoder, block length 32, threshold 0.9, `steps=gen_length`, no BERM.
-  The latter is the upstream decoder integrated into SafeDiff, not an
-  independently launched, wholly unmodified upstream model/script package.
+  The baseline runs the upstream decoder through SafeDiff's shared extended
+  model implementation.
 - GSM8K: all 1,319 official test questions, five training examples per prompt,
   fixed few-shot sampling seed 1234, generation canvas 256 tokens. MBPP: the
   original standard 500-question test split (task IDs 11–510), three examples
   (IDs 2, 3, 4), all three public tests in each prompt, canvas 1,024 tokens.
-  Both used the Instruct chat template. This is not MBPP+.
+  Both used the Instruct chat template.
 
 ## Results
 
@@ -36,41 +35,37 @@ tradeoff, not an equal-quality speedup or a safety result.
 | MBPP | `instant` | 73/500 — 14.60% | — | 21.39 | 18,392 |
 | MBPP | `fastdllm` | 181/500 — 36.20% | — | 84.06 | 59,725 |
 
-GSM8K's primary score uses strict `#### ` answer extraction; flexible numeric
-extraction is a separate diagnostic. The primary accuracy gap is −12.51
-percentage points for `instant`; the flexible gap is still −23.73 points.
-Formatting affects the strict scores, but does not explain away the quality
-loss. These scores use the frozen prompting/extraction protocol and do not
-claim equivalence to every official harness configuration.
+GSM8K uses strict `#### ` answer extraction for the primary score and flexible
+numeric extraction as a diagnostic. The `instant` accuracy gaps are −12.51
+percentage points under strict extraction and −23.73 points under flexible
+extraction. Scores follow the frozen prompting and extraction protocol above.
 
 MBPP measures one generated candidate per task passing all three original
 assertions, with the supplied setup code. Its primary accuracy gap is −21.60
 points. Canonical reference solutions passed 500/500 in the same scorer.
 The original prompt for `mbpp_493` required 4,332 input tokens; adding the
-1,024-token canvas exceeded the 4,096-token context. Per the fixed run decision,
-both modes retained that question as an input-overflow failure, without
-truncating its prompt. The score denominator is **500**, while timing covers
-only **499 actual generation pairs**. No zero latency was invented for it.
+1,024-token canvas exceeded the 4,096-token context. Both modes retained the
+original prompt and recorded an input-overflow failure. The score denominator
+is **500**; timing covers **499 actual generation pairs**.
 
 All actual generations finished with zero residual MASK tokens and contained
 an EOS/EOT, so raw and MASK-adjusted scores coincide. Execution failures were
 retained, including two `instant` and five `fastdllm` MBPP workers that exited
 without a verdict (return code −9); those candidates counted as failures.
 
-## Timing and interpretation
+## Timing and coverage
 
 Speed ratios are total `fastdllm` generation time divided by total `instant`
 generation time on identical, same-host pairs: 1,319 pairs for GSM8K and 499
 for MBPP. CUDA-synchronized generation time includes each decoder's observers
 and diagnostics; it excludes loading, warmup, tokenization, text decoding,
-scoring, and result-file I/O. It is not total experiment wall time. NFE counts
-model forwards, not FLOPs.
+scoring, and result-file I/O. NFE is the number of model forward calls.
 
-These are single-seed measurements at fixed presets and output budgets.
-They support acceleration relative to this particular integrated baseline,
-alongside a quality loss; they do not establish a universal hardware speedup,
-unchanged quality, or any safety benefit. The later `FAST`/`NORMAL`/`SAFE`
-mapping is an API convention, not a result measured by this run.
+Coverage is a single seed, fixed presets and output budgets, and same-host
+pairs on A100-SXM4-40GB. The `FAST`/`NORMAL`/`SAFE` API mapping was added after
+this run. Safety evaluation and a full SAFE/LLaDA-8B benchmark remain pending.
+The shared model includes position/cache extensions; numerical equivalence
+to the original LLaDA model on a real checkpoint remains unverified.
 
 ## Evidence identity
 

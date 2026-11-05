@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Interactive policy demo using one lazy LLaDA backend.
+"""Interactive generation with Qwen guard routing or a supplied policy.
 
-The existing Qwen guard-output heuristic remains exploratory. Explicit policy
-selection and supplied guard output also support model-free dry runs.
+Dry runs use a supplied policy or guard output. Models are loaded on first use.
 """
 
 import argparse
@@ -21,7 +20,7 @@ MODEL_ID = "Qwen/Qwen3Guard-Gen-0.6B"
 
 
 class GuardClassifier:
-    """Lazy wrapper around the demo's existing guard, with no implicit download."""
+    """Load the Qwen guard on first use; downloads are opt-in."""
 
     def __init__(self, model_path=MODEL_ID, *, allow_download=False):
         self.model_path = model_path
@@ -50,7 +49,7 @@ class GuardClassifier:
 
 
 def get_policy(result):
-    """Keep the existing guard-output heuristic; return a mode, not a step budget."""
+    """Map guard output to a risk label, policy and backend mode."""
     text = result.lower()
     if "unsafe" in text:
         risk, policy = "HIGH", "SAFE"
@@ -106,7 +105,7 @@ class DemoController:
         result = {"prompt": prompt, "policy": policy, "mode": mode,
                   "routing_source": routing_source, "risk_level": risk,
                   "guard_output": guard_output, "dry_run": dry_run,
-                  "routing_note": "Exploratory routing; SAFE is not a safety guarantee"}
+                  "routing_note": "Policy mapping: FAST=instant, NORMAL=fastdllm, SAFE=llada"}
         if not dry_run:
             if self.backend is None:
                 self.backend = self.backend_factory(self.model_path, **self.options)

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Oracle-label routing through the shared acceleration policy contract.
+"""Route dataset risk labels to FAST, NORMAL or SAFE generation.
 
-Dataset labels select FAST, NORMAL or SAFE. This is an allocation prototype,
-not a learned risk estimator or evidence that any policy guarantees safety.
+This oracle experiment reads risk labels from the input records.
 """
 
 import argparse
@@ -20,7 +19,7 @@ from analysis.run_acceleration import ResultWriter
 
 
 def route(record):
-    """Return (policy, backend mode) from an explicit ORACLE dataset label."""
+    """Map a dataset risk label to (policy, backend mode)."""
     value = record.get("risk_level", record.get("label"))
     if value is None or isinstance(value, bool):
         raise ValueError("Oracle routing requires an explicit integer risk_level or label")
@@ -128,7 +127,7 @@ def main(argv=None, *, backend_factory=LLaDABackend):
                               seed=args.seed, system_prompt=args.system_prompt,
                               on_result=persist)
     elapsed = time.perf_counter() - started
-    print("ORACLE dataset-label routing; no validated safety guarantee")
+    print("Routing source: dataset risk labels (oracle)")
     for policy in POLICIES:
         rows = [row for row in results if row["policy"] == policy]
         nfe = sum(row["generation"]["nfe"] for row in rows)

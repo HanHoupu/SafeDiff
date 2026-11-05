@@ -14,11 +14,10 @@ The standalone generation API provides three fixed LLaDA-8B-Instruct policies:
 | `NORMAL` | `fastdllm` | Pinned official Fast-dLLM v1 dual-cache decoder |
 | `SAFE` | `llada` | Pinned original LLaDA decoder, full generation canvas, one step per output token, no cache |
 
-All three share a loaded model and return responses, exact configurations,
+All three use a shared extended model and return responses, exact configurations,
 observed model-call counts, timing, and source provenance. The policy adapter
-selects a preset; it does not implement a risk estimator or certify response
-safety. In particular, `SAFE` names the unaccelerated baseline, not a demonstrated
-safety improvement. The decoders use a shared extended model implementation.
+resolves the caller's selected policy to a decoder; risk estimation and policy
+selection are handled by the controller.
 
 See [the acceleration guide](docs/acceleration.md) for the Python API, paired
 input runner, dependency setup, and measurement definitions. Inspect the presets
@@ -64,7 +63,7 @@ Hidden-state tail sizes of 32, 64, 128, and 256 tokens were investigated.
 | 128 | **0.61** |
 | 256 | 0.32 |
 
-The 128-token condition currently gives the strongest exploratory separation.
+The 128-token condition had the highest AUC among these four settings.
 
 An exploratory threshold selected on the same 20 samples produced:
 
@@ -72,7 +71,7 @@ An exploratory threshold selected on the same 20 samples produced:
 - Specificity: 0.90
 - Accuracy: 0.75
 
-These values are preliminary and are **not independent validation results**, because the threshold was selected using the same samples.
+Threshold selection and evaluation used the same 20 samples.
 
 ### Intended Contribution
 

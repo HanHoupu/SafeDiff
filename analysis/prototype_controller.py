@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Display the original exploratory hidden-score threshold routing."""
+"""Display policy choices from the hidden-score threshold."""
 
 import argparse
 import json
@@ -13,12 +13,12 @@ if __package__ in (None, ""):
 from acceleration import mode_for_policy
 
 SCORE_FILE = "analysis/results/refined_tail_128.json"
-# Selected on the same original 20 examples; not a validated threshold.
+# Threshold fitted on the 20-example dataset used by this script.
 THRESHOLD = 0.045201
 
 
 def route_score(score):
-    """Preserve the original two risk branches; resolve their current modes."""
+    """Map a hidden-state score to a risk label, policy and backend mode."""
     risk = "HIGH" if float(score) >= THRESHOLD else "LOW"
     policy = "SAFE" if risk == "HIGH" else "FAST"
     return risk, policy, mode_for_policy(policy)
@@ -30,7 +30,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     data = json.loads(Path(args.scores).read_text(encoding="utf-8"))
     print("=" * 80)
-    print("RISK-ADAPTIVE PROTOTYPE: ORIGINAL EXPLORATORY SCORE THRESHOLD")
+    print("Hidden-score threshold routing")
     print("=" * 80)
     print(f"Threshold = {THRESHOLD}")
     low, high = [], []
@@ -55,8 +55,8 @@ def main(argv=None):
         print("LOW mean :", statistics.mean(low))
     if high:
         print("HIGH mean:", statistics.mean(high))
-    print("Threshold is exploratory and selected on the same 20 examples.")
-    print("This display is not a validated safety detector; SAFE is a preset name.")
+    print("Threshold calibration and evaluation use the same 20 examples.")
+    print("Routing score: sp_hid_tail")
 
 
 if __name__ == "__main__":

@@ -120,7 +120,7 @@ class PrototypeTests(unittest.TestCase):
             self.assertTrue(backend.options["local_files_only"])
             self.assertTrue(backend.closed)
             self.assertEqual(backend.load_count, 1)
-            self.assertIn("ORACLE", output.getvalue())
+            self.assertIn("oracle", output.getvalue().lower())
             self.assertNotIn("Budget reduction", output.getvalue())
             rows = json.loads((root / "out" / "adaptive_results.json").read_text())
             self.assertEqual(len(rows), 3)

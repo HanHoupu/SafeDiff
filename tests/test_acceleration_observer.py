@@ -35,8 +35,7 @@ class ForwardObserverTests(unittest.TestCase):
                 self.calls.append({"use_cache": use_cache, "selected": selected,
                                    "past_key_values": past_key_values})
                 batch, query = input_ids.shape
-                # Cached calls model replacement within a full-length KV cache,
-                # as used by the dual-cache path; they do not append new tokens.
+                # Dual-cache calls replace positions within the full KV cache.
                 key_length = query if past_key_values is None else past_key_values[0][0].shape[-2]
                 cache = None
                 if selected:
@@ -61,8 +60,7 @@ class ForwardObserverTests(unittest.TestCase):
             self.assertIs(self.model.config.use_cache, True)
             self.model(input_ids=torch.ones((1, 2), dtype=torch.long),
                        use_cache=True, past_key_values=full.past_key_values)
-            # After SAFE, a call inheriting the shared model's cache default
-            # must still produce a cache. The adapter must not mutate config.
+            # Verify that SAFE preserves the shared model's cache default.
             self.assertIsNotNone(self.model(torch.ones((1, 3), dtype=torch.long)).past_key_values)
         finally:
             handle.remove()

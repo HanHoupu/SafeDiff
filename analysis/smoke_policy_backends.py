@@ -1,7 +1,6 @@
-"""Exercise all policy paths with a tiny random model on a local CUDA device.
+"""Check policy dispatch and cache behavior with a tiny random model on CUDA.
 
-This checks integration, not LLaDA-8B output quality or checkpoint equivalence.
-No checkpoint is downloaded. Run separately from the CPU contract tests.
+Uses random weights and a fixture tokenizer. Run separately from CPU tests.
 """
 
 import argparse
@@ -11,7 +10,7 @@ from pathlib import Path
 
 
 def run_smoke(device="cuda:0"):
-    # Use eager PyTorch only; this check needs neither TensorFlow nor Triton.
+    # Run eager PyTorch with TensorFlow, Flax and compilation disabled.
     os.environ.setdefault("USE_TF", "0")
     os.environ.setdefault("USE_FLAX", "0")
     os.environ["TORCHDYNAMO_DISABLE"] = "1"
@@ -92,7 +91,7 @@ def run_smoke(device="cuda:0"):
     finally:
         backend.close()
     return {
-        "status": "PASSED", "scope": "Synthetic integration only; no pretrained checkpoint",
+        "status": "PASSED", "scope": "Policy and cache integration with random weights and a fixture tokenizer",
         "gpu": torch.cuda.get_device_name(device), "torch": torch.__version__,
         "transformers": transformers.__version__, "dtype": "float32", "attention": "SDPA",
         "torch_compile": False,

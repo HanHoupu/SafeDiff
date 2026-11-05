@@ -1,8 +1,7 @@
-"""Batch-one LLaDA baselines with explicit source and timing provenance.
+"""Batch-one LLaDA generation with shared weights and timing metrics.
 
-Torch, transformers and vendored model code are imported lazily by load().
-The three modes share one checkpoint/model/tokenizer instance. This module does
-not estimate prompt risk, judge safety, or select a mode on the caller's behalf.
+load() imports the model dependencies and loads one checkpoint and tokenizer
+for all three modes. The caller selects the mode or policy.
 """
 
 from collections import Counter
@@ -48,7 +47,7 @@ def source_provenance():
 
 
 class _ForwardObserver:
-    """Read tensor shapes only; never modify outputs or decoding state."""
+    """Count forward calls and record input and cache lengths."""
 
     def __init__(self):
         self.shapes = Counter()
@@ -90,7 +89,7 @@ class _ForwardObserver:
 
 
 class _UncachedModel:
-    """Call the shared model without creating or reusing a KV cache."""
+    """Disable KV caching for vanilla LLaDA."""
 
     def __init__(self, model):
         self._model = model
@@ -104,12 +103,11 @@ class _UncachedModel:
 
 
 class LLaDABackend:
-    """One reusable LLaDA-8B-Instruct checkpoint, with three explicit modes.
+    """Shared LLaDA-8B-Instruct checkpoint and tokenizer for three modes.
 
-    Use a local checkpoint directory, or a Hugging Face repository ID with a
-    revision. Downloads are disabled by default. generate() accepts raw user
-    text, applies the checkpoint's chat template, and returns JSON-ready data.
-    Calls on the same backend are serialized; CPU inference is not supported.
+    Accepts a local checkpoint or a Hugging Face ID and revision. Downloads are
+    opt-in. generate() applies the chat template and returns JSON-ready results.
+    Inference runs on CUDA; calls on one backend are serialized.
     """
 
     def __init__(self, model_path, *, revision=None, device="cuda:0",
@@ -135,7 +133,7 @@ class LLaDABackend:
         self._lock = threading.RLock()
 
     def load(self):
-        """Optionally load eagerly; generate() otherwise calls this lazily."""
+        """Load the model once; also called by generate() on first use."""
         with self._lock:
             if self._model is not None:
                 return self
@@ -205,7 +203,7 @@ class LLaDABackend:
                 "flash_attention_requested": self.flash_attention,
                 "attention_modules_using_flash_attn": sum(callable(m.flash_attn_func) for m in modules),
                 "attention_modules_using_sdpa": sum(m.flash_attn_func is None for m in modules),
-                "model_implementation": "shared frozen model with explicit-position RoPE extension",
+                "model_implementation": "shared model with explicit-position RoPE support",
                 "defaults_added_for_missing_checkpoint_fields": missing,
                 "model_load_seconds": time.perf_counter() - started,
                 "chat_template_sha256": _json_hash(tokenizer.chat_template),
@@ -222,7 +220,7 @@ class LLaDABackend:
 
     def generate_for_policy(self, prompt, *, policy, gen_length=256, seed=42,
                             system_prompt=None):
-        """Execute the controller's choice using the fixed project mapping."""
+        """Generate a response using the selected policy."""
         mode = mode_for_policy(policy)
         result = self.generate(prompt, mode=mode, gen_length=gen_length,
                                seed=seed, system_prompt=system_prompt)
@@ -233,7 +231,7 @@ class LLaDABackend:
 
         generation_seconds covers the CUDA-synchronized decoder and observers.
         request_seconds also covers lazy loading (if any), tokenization, seed
-        setup and decoding. Evaluation, disk I/O and controller work are absent.
+        setup and decoding.
         """
         config = describe_config(mode, gen_length=gen_length, seed=seed)
         if not isinstance(prompt, str) or not prompt.strip():
@@ -345,7 +343,7 @@ class LLaDABackend:
                 "timing_definition": {
                     "generation_seconds": "CUDA-synchronized decoder wall time including observers and decoder diagnostics; excludes loading/tokenization/decoding/scoring",
                     "request_seconds": "wall time for this call including lazy loading if needed, tokenization, seeding, generation and text decoding; excludes caller I/O and judging",
-                    "comparison_note": "instant retains its frozen generator diagnostics; these times include their cost and are not an equal-quality speedup claim",
+                    "comparison_note": "Generation time includes each decoder's observers and diagnostics",
                 },
                 "config": config,
                 "runtime": deepcopy(self._runtime),

@@ -1,7 +1,7 @@
 """Batch-one LLaDA baselines with explicit source and timing provenance.
 
 Torch, transformers and vendored model code are imported lazily by load().
-The two modes share one checkpoint/model/tokenizer instance. This module does
+The three modes share one checkpoint/model/tokenizer instance. This module does
 not estimate prompt risk, judge safety, or select a mode on the caller's behalf.
 """
 
@@ -15,7 +15,7 @@ import random
 import threading
 import time
 
-from .presets import describe_config
+from .presets import describe_config, mode_for_policy
 
 
 def _json_hash(value):
@@ -34,6 +34,16 @@ def source_provenance():
         raw = path.read_bytes()
         if hashlib.sha256(raw).hexdigest() != expected["sha256"]:
             raise RuntimeError("Pinned acceleration source changed: " + rel)
+    vanilla = json.loads((root / "llada_provenance.json").read_text(encoding="utf-8"))
+    for rel, expected in vanilla["files"].items():
+        path = (root / rel).resolve()
+        if root not in path.parents:
+            raise RuntimeError("Invalid LLaDA source path: " + rel)
+        raw = path.read_bytes()
+        if (hashlib.sha256(raw).hexdigest() != expected["sha256"]
+                or len(raw) != expected["bytes"]):
+            raise RuntimeError("Pinned LLaDA source changed: " + rel)
+    record["vanilla_llada"] = vanilla
     return record
 
 
@@ -45,14 +55,22 @@ class _ForwardObserver:
 
     def __call__(self, module, args, kwargs, output):
         tokens = args[0] if args else kwargs.get("input_ids")
-        cache = output.past_key_values
-        if tokens is None or tokens.ndim != 2 or not isinstance(cache, (tuple, list)) or not cache:
+        if tokens is None or tokens.ndim != 2:
             raise RuntimeError("Unexpected model inputs/cache in the forward observer")
-        key_lengths = {int(pair[0].shape[-2]) for pair in cache}
-        if len(key_lengths) != 1 or any(pair[0].shape[-2] != pair[1].shape[-2] for pair in cache):
-            raise RuntimeError("Inconsistent layer KV lengths")
-        self.shapes[(int(tokens.shape[0]), int(tokens.shape[1]), key_lengths.pop(),
-                     kwargs.get("past_key_values") is None)] += 1
+        cache = getattr(output, "past_key_values", None)
+        full = kwargs.get("past_key_values") is None
+        if cache is None:
+            if not full or kwargs.get("use_cache") is not False:
+                raise RuntimeError("Missing KV output outside an explicitly uncached forward")
+            key_length = int(tokens.shape[1])
+        else:
+            if not isinstance(cache, (tuple, list)) or not cache:
+                raise RuntimeError("Unexpected KV output in the forward observer")
+            key_lengths = {int(pair[0].shape[-2]) for pair in cache}
+            if len(key_lengths) != 1 or any(pair[0].shape[-2] != pair[1].shape[-2] for pair in cache):
+                raise RuntimeError("Inconsistent layer KV lengths")
+            key_length = key_lengths.pop()
+        self.shapes[(int(tokens.shape[0]), int(tokens.shape[1]), key_length, full)] += 1
 
     def result(self, nfe):
         actual = sum(self.shapes.values())
@@ -71,8 +89,22 @@ class _ForwardObserver:
         }
 
 
+class _UncachedModel:
+    """Call the shared model without creating or reusing a KV cache."""
+
+    def __init__(self, model):
+        self._model = model
+        self.device = model.device
+
+    def __call__(self, tokens):
+        result = self._model(tokens, use_cache=False)
+        if getattr(result, "past_key_values", None) is not None:
+            raise RuntimeError("Vanilla LLaDA forward unexpectedly created a KV cache")
+        return result
+
+
 class LLaDABackend:
-    """One reusable LLaDA-8B-Instruct checkpoint, with two explicit modes.
+    """One reusable LLaDA-8B-Instruct checkpoint, with three explicit modes.
 
     Use a local checkpoint directory, or a Hugging Face repository ID with a
     revision. Downloads are disabled by default. generate() accepts raw user
@@ -188,6 +220,14 @@ class LLaDABackend:
         with self._lock:
             return deepcopy(self._runtime)
 
+    def generate_for_policy(self, prompt, *, policy, gen_length=256, seed=42,
+                            system_prompt=None):
+        """Execute the controller's choice using the fixed project mapping."""
+        mode = mode_for_policy(policy)
+        result = self.generate(prompt, mode=mode, gen_length=gen_length,
+                               seed=seed, system_prompt=system_prompt)
+        return {**result, "policy": policy}
+
     def generate(self, prompt, *, mode="instant", gen_length=256, seed=42, system_prompt=None):
         """Generate one response using the requested fixed mode.
 
@@ -206,7 +246,7 @@ class LLaDABackend:
             self.load()
             import numpy as np
             import torch
-            from .vendor import fastdllm, instant
+            from .vendor import fastdllm, instant, llada
 
             messages = []
             if system_prompt is not None:
@@ -244,18 +284,29 @@ class LLaDABackend:
                             parallel_k=8, threshold=0.9, berm_mu=16, max_rounds_per_group=64,
                             temperature=0.0, mask_id=126336, matmul_spec=self._matmul_spec,
                         )
-                    else:
+                    elif mode == "fastdllm":
                         full, nfe = fastdllm.generate_with_dual_cache(
                             self._model, inputs, steps=gen_length, gen_length=gen_length,
                             block_length=32, temperature=0.0, remasking="low_confidence",
                             mask_id=126336, threshold=0.9, factor=None,
                         )
+                    else:
+                        full = llada.generate(
+                            _UncachedModel(self._model), inputs,
+                            steps=gen_length, gen_length=gen_length,
+                            block_length=gen_length, temperature=0.0,
+                            cfg_scale=0.0, remasking="low_confidence", mask_id=126336,
+                        )
+                        nfe = gen_length
                 torch.cuda.synchronize(device)
                 elapsed = time.perf_counter() - generation_start
                 peak_memory = int(torch.cuda.max_memory_allocated(device))
             finally:
                 hook.remove()
             metrics = observer.result(nfe)
+            if mode == "llada" and (metrics["cached_forward_calls"] != 0
+                                    or metrics["query_positions"] != gen_length * (len(prompt_ids) + gen_length)):
+                raise RuntimeError("Vanilla LLaDA must recompute the full sequence at every step")
             if not torch.equal(full[:, :inputs.shape[1]], inputs):
                 raise RuntimeError("Generation changed the prompt prefix")
             raw_ids = full[0, inputs.shape[1]:].tolist()

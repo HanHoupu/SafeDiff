@@ -6,19 +6,32 @@ SafeDiff is a research prototype investigating whether the internal denoising tr
 
 ### Acceleration backends
 
-The standalone generation API provides two fixed LLaDA-8B-Instruct modes:
-`instant` (contiguous ALL8) and `fastdllm` (the pinned Fast-dLLM v1 dual-cache
-decoder). They share a loaded model and return responses, exact configurations,
-observed model-call counts, timing, and source provenance. These modes do not
-define a safety policy.
+The standalone generation API provides three fixed LLaDA-8B-Instruct policies:
+
+| Policy | Mode | Generation path |
+|---|---|---|
+| `FAST` | `instant` | Contiguous ALL8 acceleration |
+| `NORMAL` | `fastdllm` | Pinned official Fast-dLLM v1 dual-cache decoder |
+| `SAFE` | `llada` | Pinned original LLaDA decoder, full generation canvas, one step per output token, no cache |
+
+All three share a loaded model and return responses, exact configurations,
+observed model-call counts, timing, and source provenance. The policy adapter
+selects a preset; it does not implement a risk estimator or certify response
+safety. In particular, `SAFE` names the unaccelerated baseline, not a demonstrated
+safety improvement. The decoders use a shared extended model implementation.
 
 See [the acceleration guide](docs/acceleration.md) for the Python API, paired
 input runner, dependency setup, and measurement definitions. Inspect the presets
 without loading a model:
 
 ```bash
-python -m analysis.run_acceleration --mode compare --describe-config
+python -m analysis.run_acceleration --mode compare-all --describe-config
+python -m analysis.run_acceleration --policy SAFE --describe-config
 ```
+
+`compare` still runs the original two acceleration modes. The completed
+[two-mode benchmark](docs/benchmarks/acceleration-2026-11-05.md) measured faster
+generation with `instant` and lower task accuracy; it did not evaluate `SAFE`.
 
 ### Research Question
 
@@ -33,7 +46,7 @@ The prototype currently includes:
 - Hidden-state comparison between refined and control inputs
 - Hidden-state measurements over different tail lengths
 - Exploratory safety classification
-- Initial investigation of Fast-dLLM cache-based acceleration
+- Two acceleration decoders and an unaccelerated LLaDA baseline with an explicit policy adapter
 
 ### Preliminary Experiment
 
@@ -75,7 +88,11 @@ The next stage is to determine whether safety detection can be retained while re
 
 ```text
 models/          LLaDA/JailbreakBench model integration
+acceleration/    Fixed generation modes and policy adapter
 refine_prompt/   Adversarial prompt refinement
 analysis/        Experimental and analysis code
 results/         Selected experimental results
 datasets/        Experimental input data
+docs/            API guidance, validation scope, and benchmark records
+tests/           API and decoder contract checks
+```

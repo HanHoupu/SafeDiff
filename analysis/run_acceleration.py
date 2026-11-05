@@ -1,7 +1,8 @@
-"""Run either frozen LLaDA acceleration configuration without a risk policy.
+"""Run a fixed LLaDA generation mode or an explicitly selected policy name.
 
 The module and input/output helpers use only the Python standard library.
 Model dependencies are imported by the backend only when generation starts.
+Policy names select presets; they do not predict risk or certify safety.
 """
 
 from __future__ import annotations
@@ -13,9 +14,11 @@ from pathlib import Path
 import sys
 import uuid
 
+from acceleration.presets import MODES, POLICIES, describe_config, mode_for_policy
+
 
 PROMPT_FIELDS = ("text", "prompt", "vanilla prompt")
-MODES = ("instant", "fastdllm")
+LEGACY_COMPARE_MODES = ("instant", "fastdllm")
 RUN_SCHEMA = "safediff.acceleration.run.v1"
 
 
@@ -113,7 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", default="GSAI-ML/LLaDA-8B-Instruct")
     parser.add_argument("--revision", help="Model revision or commit (recorded by the backend)")
-    parser.add_argument("--mode", choices=(*MODES, "compare"), default="instant")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--mode", choices=(*MODES, "compare", "compare-all"), default="instant",
+                           help="compare retains the two acceleration modes; compare-all also includes vanilla LLaDA")
+    selection.add_argument("--policy", choices=POLICIES,
+                           help="Explicit preset: FAST=instant, NORMAL=fastdllm, SAFE=vanilla llada")
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--prompt", help="One literal user prompt")
     source.add_argument("--input", help="JSON object/list or JSONL, with text/prompt/vanilla prompt")
@@ -131,10 +138,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def selected_modes(args):
+    if args.policy is not None:
+        return (mode_for_policy(args.policy),)
+    if args.mode == "compare":
+        return LEGACY_COMPARE_MODES
+    if args.mode == "compare-all":
+        return MODES
+    return (args.mode,)
+
+
 def run_jobs(args, records: list[dict], *, backend_factory=None) -> int:
     if not args.output:
         raise ValueError("--output is required for generation")
-    modes = MODES if args.mode == "compare" else (args.mode,)
+    modes = selected_modes(args)
+    for mode in modes:
+        describe_config(mode, gen_length=args.gen_length, seed=args.seed)
     if backend_factory is None:
         from acceleration import LLaDABackend
         backend_factory = LLaDABackend
@@ -159,11 +178,15 @@ def run_jobs(args, records: list[dict], *, backend_factory=None) -> int:
                     "mode": mode, "seed": args.seed, "gen_length": args.gen_length,
                     "system_prompt": args.system_prompt,
                 }
+                if args.policy is not None:
+                    result["policy"] = args.policy
                 try:
-                    generation = backend.generate(
-                        record["prompt"], mode=mode, gen_length=args.gen_length,
-                        seed=args.seed, system_prompt=args.system_prompt,
-                    )
+                    options = {"gen_length": args.gen_length, "seed": args.seed,
+                               "system_prompt": args.system_prompt}
+                    if args.policy is not None:
+                        generation = backend.generate_for_policy(record["prompt"], policy=args.policy, **options)
+                    else:
+                        generation = backend.generate(record["prompt"], mode=mode, **options)
                 except Exception as exc:
                     result.update(status="error", error={"type": type(exc).__name__, "message": str(exc)})
                     writer.write(result)
@@ -191,12 +214,12 @@ def main(argv=None, *, backend_factory=None) -> int:
         if args.gen_length <= 0:
             raise ValueError("--gen-length must be positive")
         # describe_config validates backend restrictions before opening an output.
-        from acceleration import describe_config
-        modes = MODES if args.mode == "compare" else (args.mode,)
+        modes = selected_modes(args)
         configs = {mode: describe_config(mode, gen_length=args.gen_length, seed=args.seed)
                    for mode in modes}
         if args.describe_config:
-            print(json.dumps(configs, ensure_ascii=False, indent=2, allow_nan=False))
+            description = configs if args.policy is None else {"policy": args.policy, "mode": modes[0], "config": configs[modes[0]]}
+            print(json.dumps(description, ensure_ascii=False, indent=2, allow_nan=False))
             return 0
         records = load_records(input_path=args.input, prompt=args.prompt)
         return run_jobs(args, records, backend_factory=backend_factory)

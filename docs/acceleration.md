@@ -1,21 +1,33 @@
-# LLaDA acceleration backends
+# LLaDA generation backends
 
-This entry point runs **LLaDA-8B-Instruct** with either of two fixed generation
+This entry point runs **LLaDA-8B-Instruct** with one of three fixed generation
 configurations. It accepts a raw user prompt, applies the checkpoint's chat
 template, and returns generated text plus measurements and source provenance.
-It does not estimate risk, assign FAST/NORMAL/SAFE, or judge response safety.
+An explicit policy adapter maps `FAST` to `instant`, `NORMAL` to `fastdllm`,
+and `SAFE` to `llada`. It does not estimate risk, choose a policy from prompt
+content, or judge response safety. `SAFE` is a configuration name, not a safety
+guarantee.
 
-| Mode | Decoder | Fixed settings |
+| Policy | Mode | Decoder and fixed settings |
 |---|---|---|
-| `instant` | Existing contiguous ALL8 decoder | Up to 8 blocks per group, block length 32, confidence threshold 0.9, BERM mu 16, cap 64 forward rounds per group including warmup, dual cache |
-| `fastdllm` | Pinned official Fast-dLLM v1 dual-cache decoder | Block length 32, confidence threshold 0.9, sequential blocks, native upstream stopping loop, no BERM |
+| `FAST` | `instant` | Existing contiguous ALL8 decoder: up to 8 blocks per group, block length 32, confidence threshold 0.9, BERM mu 16, cap 64 forward rounds per group including warmup, dual cache |
+| `NORMAL` | `fastdllm` | Pinned official Fast-dLLM v1 dual-cache decoder: block length 32, confidence threshold 0.9, sequential blocks, native upstream stopping loop, no BERM |
+| `SAFE` | `llada` | Pinned original LLaDA decoder: `steps = block_length = gen_length`, full-canvas forwards, one planned token transfer per step, CFG scale 0, no cache, confidence threshold, or BERM |
 
-Both modes use batch size 1, temperature 0, the same model instance and tokenizer,
+All modes use batch size 1, temperature 0, the same model instance and tokenizer,
 and a fixed output canvas. Default generation length is 256 tokens. Length must
-be a positive multiple of 32. At length 256 the `instant` decoder has one full
-eight-block group; a shorter generation length uses a shorter group. Neither mode is
-a claim of equivalent quality or safety. The output reports remaining mask
-tokens instead of repairing them silently.
+be a positive multiple of 32 for `instant` and `fastdllm`; `llada` accepts any
+positive integer. At length 256 the `instant` decoder has one full eight-block
+group; a shorter generation length uses a shorter group. The output reports
+remaining mask tokens instead of repairing them silently. These presets do not
+establish equivalent quality or safety.
+
+The LLaDA generator is copied unchanged from upstream commit
+`f51cb1731f5a40ba35c15e51b6b66b147e689f24`, with its MIT license and hashes recorded
+in `acceleration/vendor/llada_provenance.json`. The adapter forces
+`use_cache=False` and supplies no cached keys/values. It still uses the shared
+extended model also used by the accelerated modes; the complete model/decoder
+package is not byte-identical to the original LLaDA repository.
 
 ## Inspect without a GPU
 
@@ -23,6 +35,8 @@ Run from the repository root:
 
 ```bash
 python -m analysis.run_acceleration --mode compare --describe-config
+python -m analysis.run_acceleration --mode compare-all --describe-config
+python -m analysis.run_acceleration --policy SAFE --describe-config
 python -m analysis.run_acceleration --help
 python -m unittest discover -s tests -p 'test_acceleration_contract.py' -v
 ```
@@ -62,9 +76,19 @@ python -m analysis.run_acceleration \
   --input examples/acceleration_prompts.jsonl \
   --gen-length 256 --seed 42 \
   --output results/paired_example.jsonl
+
+python -m analysis.run_acceleration \
+  --model-path /path/to/LLaDA-8B-Instruct \
+  --policy SAFE \
+  --prompt 'What is 17 + 25? Give a brief answer.' \
+  --gen-length 256 --seed 42 \
+  --output results/llada_example.json
 ```
 
-Set `--mode fastdllm` to run the official baseline alone. A Hugging Face model
+Set `--mode fastdllm` to run the integrated official Fast-dLLM decoder alone,
+or `--mode llada` for the original LLaDA decoder. `--policy FAST|NORMAL|SAFE`
+and `--mode` are mutually exclusive. Without either option, the default remains
+`instant`. A Hugging Face model
 ID defaults to `GSAI-ML/LLaDA-8B-Instruct`; use `--allow-download` only when a
 download is intended, and `--revision <commit>` to select a fixed remote model
 revision. Local checkpoint paths are also supported. Runtime metadata records
@@ -73,7 +97,9 @@ every model-weight file.
 
 `compare` processes each prompt in the order `instant`, then `fastdllm`, with
 the same model/tokenizer instance, prompt formatting, system prompt, generation
-length and seed. It resets the seed for each call. Shared seed and prompt do
+length and seed. `compare-all` adds `llada` as the third call and retains the
+accelerated modes' multiple-of-32 length requirement. Each call resets the seed.
+Shared seed and prompt do
 not imply identical answers across different decoders. This is a paired output
 runner, not a statistically controlled speed benchmark: order is fixed, and
 the first request includes lazy model loading. For a warm-call study, use the
@@ -108,20 +134,23 @@ schema: safediff.acceleration.run.v1
 run_id, input_index, input_id
 input: original input object
 prompt, mode, seed, gen_length, system_prompt
+policy: FAST | NORMAL | SAFE (only when --policy was supplied)
 status: ok | incomplete | error
 generation: backend result (on complete or incomplete generation)
 error: exception type and message (on failure)
 ```
 
-For `compare`, each input yields two records linked by `run_id` and
-`input_index`. Each completed backend result is saved before starting the next
+For `compare`, each input yields two records; `compare-all` yields three.
+Records are linked by `run_id` and `input_index`. A policy-selected run records
+both `policy` and resolved `mode`, including in the nested generation result.
+Each completed backend result is saved before starting the next
 call. A `.json` file is an array, rewritten through an atomic temporary-file
 replacement after each record. A `.jsonl` file is flushed and synchronized
 after every line. Existing output files are rejected; select a new name for
 another run. If generation fails, completed records and an error record are
 retained and the command exits with code 1. A result with remaining masks is
 saved as `status: incomplete`, including its original text, token IDs and mask
-counts. Both comparison modes and all remaining inputs still run. A run with
+counts. All selected comparison modes and remaining inputs still run. A run with
 any incomplete result exits with code 2; a fully complete run exits with code
 0. A later exception takes precedence and exits with code 1. No incomplete
 samples are dropped or silently repaired.
@@ -168,7 +197,7 @@ try:
     backend.load()  # Optional: load once before measuring warm requests.
     result = backend.generate(
         "Explain why the sky looks blue.",
-        mode="instant",
+        mode="instant",  # Also accepts "fastdllm" and "llada".
         gen_length=256,
         seed=42,
     )
@@ -177,24 +206,48 @@ finally:
     backend.close()
 ```
 
-A caller that already has a FAST/NORMAL/SAFE controller must supply its own
-explicit mapping. There is no built-in mapping or default fallback:
+A caller that already chooses FAST/NORMAL/SAFE can use the fixed adapter:
 
 ```python
-from acceleration import MODES
+from acceleration import LLaDABackend, POLICIES, POLICY_TO_MODE, mode_for_policy
 
-def generate_for_policy(backend, prompt, policy, policy_to_mode, *, seed=42):
-    if policy not in policy_to_mode:
-        raise ValueError(f"No backend mapping configured for policy {policy!r}")
-    mode = policy_to_mode[policy]
-    if mode not in MODES:
-        raise ValueError(f"Unknown backend mode: {mode!r}")
-    return backend.generate(prompt, mode=mode, gen_length=256, seed=seed)
+assert POLICIES == ("FAST", "NORMAL", "SAFE")
+assert POLICY_TO_MODE == {"FAST": "instant", "NORMAL": "fastdllm", "SAFE": "llada"}
+assert mode_for_policy("SAFE") == "llada"
+
+with LLaDABackend("/path/to/LLaDA-8B-Instruct") as backend:
+    result = backend.generate_for_policy(
+        "Explain why the sky looks blue.",
+        policy="SAFE",
+        gen_length=256,
+        seed=42,
+    )
+    assert (result["policy"], result["mode"]) == ("SAFE", "llada")
 ```
 
-Evaluate any mapping against paired response-quality and safety measurements
-before treating it as a validated policy. Neither the names of the controller
-policies nor a larger nominal computation budget supply that validation.
+Policy names are case-sensitive. Unknown policies and invalid generation
+arguments are rejected before model loading; the adapter has no fallback or
+risk estimator. Evaluate the controller's decisions against paired quality and
+safety measurements before treating it as a validated policy. A larger nominal
+computation budget alone does not supply that validation.
+
+The existing controller prototypes use this same mapping:
+
+```bash
+python -m analysis.demo_controller --dry-run
+python -m analysis.demo_controller --dry-run --policy SAFE --prompt 'What is 17 + 25?'
+python -m analysis.adaptive_acceleration_prototype \
+  --input path/to/oracle_labelled_prompts.json \
+  --model-path /path/to/LLaDA-8B-Instruct \
+  --out-dir results/policy_trial
+```
+
+The oracle prototype reads dataset risk labels; the interactive demo retains
+the existing exploratory Qwen guard-output heuristic. Neither introduces a new
+risk estimator. Generation outputs are saved incrementally and existing output
+files are refused. The demo supports `--output results/demo.jsonl`; without it,
+results go to the terminal. `analysis.prototype_controller` only displays the
+original hidden-score threshold's policy choices and does not run generation.
 
 ## Verification scope
 
@@ -202,17 +255,48 @@ The standard-library contract tests cover input compatibility and rejection,
 one-instance paired invocation, identical shared generation arguments,
 incremental persistence, preservation of failures and incomplete outputs,
 continuation after remaining masks, exact prompt preservation, and refusal to
-overwrite an output. They do not execute or numerically validate either decoder. GPU
-smoke outputs and parity checks are reported separately with their actual
+overwrite an output. The 19 contract tests also cover the three-policy mapping,
+unchanged legacy configurations, `compare` compatibility, `compare-all`, and
+validation before model loading. They do not execute or numerically validate
+the decoders. Three additional source/tiny-CPU tests in
+`tests/test_llada_decoder.py` check the original LLaDA source/license hashes,
+full-sequence forwards with one token transferred per step, and retention of
+the full budget even for EOS-like predictions. These tests use no 8B checkpoint.
+GPU smoke outputs and parity checks are reported separately with their actual
 checkpoint, environment and source revisions.
 
-The [2026-11-05 validation receipt](validation/acceleration-2026-11-05.json)
-records a successful run on a dedicated NVIDIA A40 with PyTorch 2.4.0,
+The complete suite currently passes 42 tests, including six observer/cache
+checks and fourteen controller tests covering lazy imports, shared instances,
+configuration preflight, failure persistence and output protection:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The optional CUDA smoke uses a tiny randomly initialized shared model and a
+fixture tokenizer. It downloads no checkpoint:
+
+```bash
+python -m analysis.smoke_policy_backends --device cuda:0 --output policies-tiny-smoke.json
+```
+
+The [three-policy smoke receipt](validation/policies-2026-11-05.json) records
+seven passing checks on an RTX 3090 Ti, PyTorch 2.6.0+cu124, Transformers 4.49.0,
+float32, SDPA and eager execution. Two FAST/NORMAL/SAFE cycles reproduced tokens
+and NFE while retaining the same model object. At length 32, SAFE used 32 full
+forwards and zero cached calls; FAST and NORMAL each used one full plus 31 cached
+calls in this synthetic fixture. SAFE also passed at length 1. This checks
+integration and cache isolation, not 8B numerical parity, performance, quality,
+or safety.
+
+The original **two-mode**
+[2026-11-05 validation receipt](validation/acceleration-2026-11-05.json)
+records a successful `instant`/`fastdllm` run on a dedicated NVIDIA A40 with PyTorch 2.4.0,
 CUDA 12.4, Transformers 4.49.0, bfloat16 and SDPA. The checkpoint revision was
 `08b83a6feb34df1a6011b80c3c00c7563e963b07`.
 
-- All 9 contract tests passed locally and on the GPU host.
-- For each mode, lengths 64, 256 and 288 exercised a short group, one full
+- The 9 contract tests present at that revision passed locally and on the GPU host.
+- For each of those two modes, lengths 64, 256 and 288 exercised a short group, one full
   eight-block group, and a shorter last group. All generated token IDs and NFE
   matched the pre-integration references in all 6 comparisons. The Fast-dLLM
   reference used the original upstream model, while the API used the shared
@@ -225,3 +309,9 @@ CUDA 12.4, Transformers 4.49.0, bfloat16 and SDPA. The checkpoint revision was
 These checks validate the tested implementation paths. They do not establish
 safety, benchmark accuracy, an equal-quality speedup, or equivalence for every
 possible prompt, dtype, attention implementation, or generation length.
+
+The [completed two-mode benchmark](benchmarks/acceleration-2026-11-05.md)
+separately records full GSM8K test-1319 and standard MBPP test-500 results at
+the earlier `dd10902` commit. It measures a speed/quality tradeoff, not an
+equal-quality or safety improvement. `SAFE`/`llada` has no full 8B benchmark
+results in that record.

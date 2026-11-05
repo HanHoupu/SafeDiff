@@ -1,0 +1,77 @@
+{
+  "status": "PASSED",
+  "scope": "Synthetic integration only; no pretrained checkpoint",
+  "gpu": "NVIDIA GeForce RTX 3090 Ti",
+  "torch": "2.6.0+cu124",
+  "transformers": "4.49.0",
+  "dtype": "float32",
+  "attention": "SDPA",
+  "torch_compile": false,
+  "model": {
+    "d_model": 32,
+    "n_layers": 2,
+    "random_weights": true
+  },
+  "shared_model_and_mode_switch_repeatability": true,
+  "checks": [
+    {
+      "policy": "FAST",
+      "mode": "instant",
+      "nfe": 32,
+      "full_forward_calls": 1,
+      "cached_forward_calls": 31,
+      "residual_masks": 0,
+      "passed": true
+    },
+    {
+      "policy": "NORMAL",
+      "mode": "fastdllm",
+      "nfe": 32,
+      "full_forward_calls": 1,
+      "cached_forward_calls": 31,
+      "residual_masks": 0,
+      "passed": true
+    },
+    {
+      "policy": "SAFE",
+      "mode": "llada",
+      "nfe": 32,
+      "full_forward_calls": 32,
+      "cached_forward_calls": 0,
+      "residual_masks": 0,
+      "passed": true
+    },
+    {
+      "policy": "FAST",
+      "mode": "instant",
+      "nfe": 32,
+      "full_forward_calls": 1,
+      "cached_forward_calls": 31,
+      "residual_masks": 0,
+      "passed": true
+    },
+    {
+      "policy": "NORMAL",
+      "mode": "fastdllm",
+      "nfe": 32,
+      "full_forward_calls": 1,
+      "cached_forward_calls": 31,
+      "residual_masks": 0,
+      "passed": true
+    },
+    {
+      "policy": "SAFE",
+      "mode": "llada",
+      "nfe": 32,
+      "full_forward_calls": 32,
+      "cached_forward_calls": 0,
+      "residual_masks": 0,
+      "passed": true
+    },
+    {
+      "policy": "SAFE",
+      "gen_length": 1,
+      "passed": true
+    }
+  ]
+}

@@ -1,0 +1,162 @@
+{
+  "date": "2026-11-05",
+  "status": "PASSED",
+  "scope": "Implementation and equivalence checks only; not a safety, quality, or speedup benchmark.",
+  "model": "GSAI-ML/LLaDA-8B-Instruct",
+  "model_revision": "08b83a6feb34df1a6011b80c3c00c7563e963b07",
+  "gpu": "NVIDIA A40",
+  "dtype": "bfloat16",
+  "torch": "2.4.0",
+  "torch_cuda": "12.4",
+  "transformers": "4.49.0",
+  "flash_attention_modules": 0,
+  "sdpa_modules": 32,
+  "contract_tests": {
+    "passed": 9,
+    "environments": [
+      "local standard-library Python",
+      "temporary GPU host standard-library Python"
+    ]
+  },
+  "api_checks": [
+    {
+      "case": "short_group",
+      "mode": "instant",
+      "passed": true,
+      "nfe": 2
+    },
+    {
+      "case": "short_group",
+      "mode": "fastdllm",
+      "passed": true,
+      "nfe": 3
+    },
+    {
+      "case": "full_all8_group",
+      "mode": "instant",
+      "passed": true,
+      "nfe": 23
+    },
+    {
+      "case": "full_all8_group",
+      "mode": "fastdllm",
+      "passed": true,
+      "nfe": 52
+    },
+    {
+      "case": "partial_last_group",
+      "mode": "instant",
+      "passed": true,
+      "nfe": 30
+    },
+    {
+      "case": "partial_last_group",
+      "mode": "fastdllm",
+      "passed": true,
+      "nfe": 39
+    },
+    {
+      "case": "repeat_after_switch",
+      "mode": "instant",
+      "passed": true
+    },
+    {
+      "case": "repeat_after_switch",
+      "mode": "fastdllm",
+      "passed": true
+    },
+    {
+      "case": "masked_prompt_rejected",
+      "passed": true
+    }
+  ],
+  "reference_comparisons": [
+    {
+      "id": "short_group",
+      "mode": "instant",
+      "checks": {
+        "input_tokens_equal": true,
+        "all_generated_tokens_equal": true,
+        "nfe_equal": true
+      },
+      "passed": true,
+      "nfe": 2
+    },
+    {
+      "id": "full_all8_group",
+      "mode": "instant",
+      "checks": {
+        "input_tokens_equal": true,
+        "all_generated_tokens_equal": true,
+        "nfe_equal": true
+      },
+      "passed": true,
+      "nfe": 23
+    },
+    {
+      "id": "partial_last_group",
+      "mode": "instant",
+      "checks": {
+        "input_tokens_equal": true,
+        "all_generated_tokens_equal": true,
+        "nfe_equal": true
+      },
+      "passed": true,
+      "nfe": 30
+    },
+    {
+      "id": "short_group",
+      "mode": "fastdllm",
+      "checks": {
+        "input_tokens_equal": true,
+        "all_generated_tokens_equal": true,
+        "nfe_equal": true
+      },
+      "passed": true,
+      "nfe": 3
+    },
+    {
+      "id": "full_all8_group",
+      "mode": "fastdllm",
+      "checks": {
+        "input_tokens_equal": true,
+        "all_generated_tokens_equal": true,
+        "nfe_equal": true
+      },
+      "passed": true,
+      "nfe": 52
+    },
+    {
+      "id": "partial_last_group",
+      "mode": "fastdllm",
+      "checks": {
+        "input_tokens_equal": true,
+        "all_generated_tokens_equal": true,
+        "nfe_equal": true
+      },
+      "passed": true,
+      "nfe": 39
+    }
+  ],
+  "reference_definition": "Same GPU, weights, prompt token IDs, seed, dtype and parameters. fastdllm reference uses original official model and decoder; instant reference uses original frozen model and generator.",
+  "cli_paired_records": 4,
+  "all_test_generations_without_residual_masks": true,
+  "gpu_generation_calls": 18,
+  "evidence_archive_sha256": "4aa5091191ff7c1eb2ecbd5c228ed3428a7bf987095445fb05c6c8af19958e68",
+  "evidence_files_sha256": {
+    "api_summary.json": "249a84bc4235b0621f217f4e3a5f68013374073924af38ffb8438f8f9db4a9fd",
+    "cli_compare.jsonl": "ecc7246896f47558f59171bbcabb07988da4075c3c72b950cdb5d30ba14de61a",
+    "full_all8_group_fastdllm.json": "ca5483fede8958afcc167021e8329348918fb555b3edb328300cb7a56b885f1d",
+    "full_all8_group_instant.json": "d9b86fea1c9f08afcfe5b6a30038d410724cc02eb1b85c8abd3b3acb241acc91",
+    "partial_last_group_fastdllm.json": "066eb634d28c91bcb3ff2017473074bc4bfb016dfc6b68bbb5a8b595797d7249",
+    "partial_last_group_instant.json": "8c37c44e446fb616b32732240ff664dd0f8573206a8cbd3750bf9e0898c66860",
+    "reference_fastdllm.jsonl": "b8d59ee654715d73ffdb95d49eeb1fcb06c423038ea5ae83c68611148b38364f",
+    "reference_instant.jsonl": "065d5547d351df1a0b3c100b2632ec7cd79a90393c4c9ebb500de9d0063e1564",
+    "reference_requests.json": "76925c734dfc74d0e2ae7bbe972c23a12bd877a96cde7002c241bc8168916ef0",
+    "repeat_fastdllm.json": "83c79d18768f8dad46f1d4eda00c8c18fc528563a3310ad0d021220a550f94b0",
+    "repeat_instant.json": "3606c0c46185162e64a639103db4b2bab075282720876886ffb0355801c30670",
+    "runtime.json": "1763f4f7b0218300b2f15f666246e5b05a181fbd6b308c659550f2ca351ba820",
+    "short_group_fastdllm.json": "6e115b1d8330fa8fde9b8f8364046a40111e53962f78a2feb683eb4f49976d56",
+    "short_group_instant.json": "d77351b995d614add8149c983242aae46bbc32eab21a8b2733743451729855e2"
+  }
+}

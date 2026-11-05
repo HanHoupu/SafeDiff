@@ -4,6 +4,22 @@
 
 SafeDiff is a research prototype investigating whether the internal denoising trajectory of Diffusion Language Models (dLLMs) can provide a lightweight, training-free signal for safety detection.
 
+### Acceleration backends
+
+The standalone generation API provides two fixed LLaDA-8B-Instruct modes:
+`instant` (contiguous ALL8) and `fastdllm` (the pinned Fast-dLLM v1 dual-cache
+decoder). They share a loaded model and return responses, exact configurations,
+observed model-call counts, timing, and source provenance. These modes do not
+define a safety policy.
+
+See [the acceleration guide](docs/acceleration.md) for the Python API, paired
+input runner, dependency setup, and measurement definitions. Inspect the presets
+without loading a model:
+
+```bash
+python -m analysis.run_acceleration --mode compare --describe-config
+```
+
 ### Research Question
 
 Can safety-relevant information in the diffusion/denoising process be used during inference while preserving the efficiency benefits of fast dLLM inference?

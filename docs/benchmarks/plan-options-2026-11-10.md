@@ -1,7 +1,5 @@
 # Historical LLaDA benchmarks for Plans A and B
 
-[Downloadable English text report](plan-ab-benchmark-results-2026-11-10.txt)
-
 Choose one plan for a comparison of the three fixed policies. A future adaptive
 arm should use the same plan. Plan A compares complete decoding strategies and
 includes an original LLaDA reference. Plan B keeps the Fast-dLLM v1 dual-cache

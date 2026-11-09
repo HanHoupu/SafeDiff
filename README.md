@@ -36,8 +36,6 @@ Use `--plan` with `--policy`. The direct `--mode` interface is unchanged.
 interface to test the three Plan B thresholds. See the
 [historical results](docs/benchmarks/plan-options-2026-11-10.md) for the
 benchmark scope and observed tradeoffs.
-The same results are available as a standalone
-[English benchmark TXT](docs/benchmarks/plan-ab-benchmark-results-2026-11-10.txt).
 
 ### Research Question
 

@@ -1,24 +1,34 @@
 # LLaDA generation backends
 
-This entry point runs **LLaDA-8B-Instruct** with one of three fixed generation
-configurations. It accepts a raw user prompt, applies the checkpoint's chat
-template, and returns generated text plus measurements and source provenance.
-An explicit policy adapter maps `FAST` to `instant`, `NORMAL` to `fastdllm`,
-and `SAFE` to `llada`. The caller selects the policy; the adapter resolves it
-to a decoder before generation.
+This entry point runs **LLaDA-8B-Instruct**. It accepts a raw user prompt,
+applies the checkpoint's chat template, and returns generated text with timing
+and source provenance. Select a plan and a policy through the standalone CLI
+or Python API. SafeDiff's existing routing scripts are separate from this
+interface. A caller can select a policy per prompt and pass it to the backend.
 
-| Policy | Mode | Decoder and fixed settings |
+| Policy | Plan A (default) | Plan B |
 |---|---|---|
-| `FAST` | `instant` | Existing contiguous ALL8 decoder: up to 8 blocks per group, block length 32, confidence threshold 0.9, BERM mu 16, cap 64 forward rounds per group including warmup, dual cache |
-| `NORMAL` | `fastdllm` | Pinned official Fast-dLLM v1 dual-cache decoder: block length 32, confidence threshold 0.9, sequential blocks, native upstream stopping loop, no BERM |
-| `SAFE` | `llada` | Pinned original LLaDA decoder: `steps = block_length = gen_length`, full-canvas forwards, one planned token transfer per step, CFG scale 0, no cache, confidence threshold, or BERM |
+| `FAST` | Contiguous ALL8 (`instant`), threshold 0.9 | Fast-dLLM v1 dual-cache (`fastdllm`), threshold 0.7 |
+| `NORMAL` | Fast-dLLM v1 dual-cache (`fastdllm`), threshold 0.9 | Fast-dLLM v1 dual-cache (`fastdllm`), threshold 0.8 |
+| `SAFE` | Original LLaDA (`llada`), no cache | Fast-dLLM v1 dual-cache (`fastdllm`), threshold 0.9 |
 
-All modes use batch size 1, temperature 0, the same model instance and tokenizer,
-and a fixed output canvas. Default generation length is 256 tokens. Length must
-be a positive multiple of 32 for `instant` and `fastdllm`; `llada` accepts any
-positive integer. At length 256 the `instant` decoder has one full eight-block
-group; a shorter generation length uses a shorter group. Residual mask tokens
-are retained in the output and reported in the result.
+ALL8 uses 32-token blocks, up to 8 contiguous blocks per group, dual cache,
+BERM mu 16, and a cap of 64 forward rounds per group including warmup. Fast-dLLM
+uses 32-token sequential blocks, `steps = gen_length`, the upstream threshold
+completion loop, and no BERM. Original LLaDA uses
+`steps = block_length = gen_length`, one planned token transfer per full-canvas
+forward, and CFG scale 0.
+
+All modes use batch size 1, temperature 0, low-confidence remasking, the same
+model instance and tokenizer, and a fixed output canvas. The default canvas is
+256 tokens and the default seed is 42. Use a positive multiple of 32 to compare
+all three policies. At length 256, ALL8 has one full eight-block group.
+The direct `llada` mode accepts any positive integer. Residual mask tokens are
+retained and reported. The confidence threshold controls token acceptance.
+`SAFE` is a policy label whose safety must be measured on the study inputs.
+
+See the [historical benchmark results by plan](benchmarks/plan-options-2026-11-10.md)
+for the measured speed and task quality tradeoffs.
 
 The LLaDA generator is copied unchanged from upstream commit
 `f51cb1731f5a40ba35c15e51b6b66b147e689f24`, with its MIT license and hashes recorded
@@ -35,6 +45,7 @@ Run from the repository root:
 python -m analysis.run_acceleration --mode compare --describe-config
 python -m analysis.run_acceleration --mode compare-all --describe-config
 python -m analysis.run_acceleration --policy SAFE --describe-config
+python -m analysis.run_acceleration --plan B --policy FAST --describe-config
 python -m analysis.run_acceleration --help
 ```
 
@@ -76,16 +87,19 @@ python -m analysis.run_acceleration \
 
 python -m analysis.run_acceleration \
   --model-path /path/to/LLaDA-8B-Instruct \
-  --policy SAFE \
+  --plan B --policy NORMAL \
   --prompt 'What is 17 + 25? Give a brief answer.' \
   --gen-length 256 --seed 42 \
-  --output results/llada_example.json
+  --output results/plan-b-normal.json
 ```
 
 Set `--mode fastdllm` to run the integrated official Fast-dLLM decoder alone,
 or `--mode llada` for the original LLaDA decoder. `--policy FAST|NORMAL|SAFE`
-and `--mode` are mutually exclusive. Without either option, the default remains
-`instant`. A Hugging Face model
+and `--mode` are mutually exclusive. Use `--plan B` with `--policy` to select
+the threshold-only plan. Policy runs default to Plan A. Pass `--plan` only
+with `--policy`. Direct `--mode` runs retain their original settings,
+including threshold 0.9 for `fastdllm`.
+Without either selector, the default remains `instant`. A Hugging Face model
 ID defaults to `GSAI-ML/LLaDA-8B-Instruct`; use `--allow-download` only when a
 download is intended, and `--revision <commit>` to select a fixed remote model
 revision. Local checkpoint paths are also supported. Runtime metadata records
@@ -129,6 +143,7 @@ run_id, input_index, input_id
 input: original input object
 prompt, mode, seed, gen_length, system_prompt
 policy: FAST | NORMAL | SAFE (only when --policy was supplied)
+plan: A | B (only when --policy was supplied)
 status: ok | incomplete | error
 generation: backend result (on complete or incomplete generation)
 error: exception type and message (on failure)
@@ -136,7 +151,8 @@ error: exception type and message (on failure)
 
 For `compare`, each input yields two records; `compare-all` yields three.
 Records are linked by `run_id` and `input_index`. A policy-selected run records
-both `policy` and resolved `mode`, including in the nested generation result.
+the `plan`, `policy`, and resolved `mode`, including in the nested generation
+result. The resolved threshold is saved in the generation config.
 Each completed backend result is saved before starting the next
 call. A `.json` file is an array, rewritten through an atomic temporary-file
 replacement after each record. A `.jsonl` file is flushed and synchronized
@@ -176,7 +192,7 @@ The decoder completes its fixed canvas and the displayed response uses only
 the token prefix before the first EOS/EOT. The full canvas and masks remain in
 the result for inspection. Task scoring is handled by the experiment code.
 
-## Call from a controller
+## Use the Python API
 
 The API accepts the backend mode explicitly:
 
@@ -197,7 +213,7 @@ finally:
     backend.close()
 ```
 
-A caller that already chooses FAST/NORMAL/SAFE can use the fixed adapter:
+A caller that already chooses FAST/NORMAL/SAFE can use the policy adapter:
 
 ```python
 from acceleration import LLaDABackend, POLICIES, POLICY_TO_MODE, mode_for_policy
@@ -214,26 +230,53 @@ with LLaDABackend("/path/to/LLaDA-8B-Instruct") as backend:
         seed=42,
     )
     assert (result["policy"], result["mode"]) == ("SAFE", "llada")
+
+    result = backend.generate_for_policy(
+        "Explain why the sky looks blue.",
+        plan="B",
+        policy="FAST",
+        gen_length=256,
+        seed=42,
+    )
+    assert (result["plan"], result["policy"], result["mode"]) == ("B", "FAST", "fastdllm")
+    assert result["config"]["threshold"] == 0.7
 ```
 
-Policy names are case-sensitive. Unknown policies and invalid generation
-arguments are rejected before model loading. Risk estimation and policy
-selection remain caller responsibilities.
-
-The existing controller prototypes use this same mapping:
+Plan and policy names are case-sensitive. Invalid settings are rejected
+before model loading. For a fixed-policy comparison, use the same plan,
+checkpoint, prompts, seed, generation budget, and attention settings across
+all three arms. For example, run Plan B on the supplied JSONL input.
 
 ```bash
-python -m analysis.demo_controller --dry-run
-python -m analysis.demo_controller --dry-run --policy SAFE --prompt 'What is 17 + 25?'
-python -m analysis.adaptive_acceleration_prototype \
-  --input path/to/oracle_labelled_prompts.json \
-  --model-path /path/to/LLaDA-8B-Instruct \
-  --out-dir results/policy_trial
+for POLICY in SAFE NORMAL FAST; do
+  python -m analysis.run_acceleration \
+    --model-path /path/to/LLaDA-8B-Instruct \
+    --input examples/acceleration_prompts.jsonl \
+    --plan B --policy "$POLICY" --revision "$LLADA_REVISION" \
+    --gen-length 256 --seed 42 --no-flash-attention \
+    --output "results/fixed-B-${POLICY}.jsonl"
+done
 ```
 
-The oracle prototype reads dataset risk labels; the interactive demo uses
-the existing exploratory Qwen guard-output heuristic. Generation outputs are
-saved incrementally and existing output
-files are refused. The demo supports `--output results/demo.jsonl`; without it,
-results go to the terminal. `analysis.prototype_controller` only displays the
-original hidden-score threshold's policy choices and does not run generation.
+Set `LLADA_REVISION` to the exact checkpoint revision. Each invocation loads
+its own model. When measuring warm requests, reuse one backend and account for
+first-call overhead. A future adaptive arm can pass its chosen policy to the
+same API and measure the controller overhead separately.
+
+## Check both plans on a GPU
+
+Before freezing a version, run the smoke command against the intended
+LLaDA-8B-Instruct checkpoint and decoder environment.
+
+```bash
+python -m analysis.smoke_acceleration_plans \
+  --model-path /path/to/LLaDA-8B-Instruct --revision "$LLADA_REVISION" \
+  --no-flash-attention --output results/plan-smoke.jsonl \
+  --summary results/plan-smoke-summary.json
+```
+
+The standalone smoke checks both plans on two benign prompts using one loaded
+model and a 256-token canvas. It compares A NORMAL with B SAFE and repeats the
+policy calls in mixed order to check token and NFE consistency. The delivered
+standalone code also ran all six policies on one GSM8K test item on an A100.
+[Current GSM8K validation](reviews/gsm8k-validation-2026-11-10.md) · [Earlier A100 snapshot](reviews/a100-validation-2026-11-10.md)

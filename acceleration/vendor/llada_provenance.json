@@ -35,6 +35,6 @@
     "mask_id": 126336,
     "cache": "The calling adapter must force use_cache=False for every model forward; no past_key_values are supplied or reused.",
     "stopping": "Fixed steps, no early EOS stop; retain and report any residual MASK.",
-    "model_compatibility": "The generator uses model.device and model(...).logits. Execution uses the shared extended model; pretrained-checkpoint parity with the original LLaDA model remains untested."
+    "model_compatibility": "The generator uses model.device and model(...).logits. Execution uses the shared extended model. Original-model parity is evaluated separately for specific inputs and settings; see docs/reviews/gsm8k-validation-2026-11-10.md."
   }
 }

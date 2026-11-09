@@ -17,4 +17,7 @@ on every forward and checks that the model returns no cached states.
 
 Execution uses the shared Fast-dLLM-derived model with position/cache extensions.
 CPU and tiny-model CUDA tests cover decoder behavior and cache handling.
-Pretrained-checkpoint parity with the original LLaDA model remains untested.
+The November 10 validation reproduced the original model's complete output on
+one GSM8K prompt; an earlier snapshot also matched two benign prompts.
+These input-specific checks do not establish general quality or safety parity.
+See `docs/reviews/gsm8k-validation-2026-11-10.md` for the current run.

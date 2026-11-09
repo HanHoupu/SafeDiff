@@ -1,0 +1,144 @@
+SAFEDIFF LLaDA-8B-INSTRUCT BENCHMARK RESULTS
+November 10, 2026
+
+PLANS AND SETTINGS
+
+Plan  Policy  Decoder                         Token confidence threshold
+A     FAST    Contiguous ALL8, dual-cache      0.9
+A     NORMAL  Fast-dLLM v1, dual-cache         0.9
+A     SAFE    Original LLaDA, uncached         None
+B     FAST    Fast-dLLM v1, dual-cache         0.7
+B     NORMAL  Fast-dLLM v1, dual-cache         0.8
+B     SAFE    Fast-dLLM v1, dual-cache         0.9
+
+ALL8 processes up to eight adjacent 32-token blocks in each group, with
+BERM mu=16 and a cap of 64 forward rounds per group including warmup.
+Fast-dLLM uses sequential 32-token blocks, steps=gen_length, and its native
+threshold stopping loop. Plan A SAFE uses one full-canvas block,
+block_length=steps=gen_length, and CFG scale 0. Each forward evaluates the
+full sequence without a KV cache. All presets use batch size 1, temperature
+0, low-confidence remasking, a fixed canvas, and seed 42 by default. The
+standalone default canvas is 256 tokens. EOS/EOT determines the displayed
+answer boundary. Generation itself follows the preset's completion rule.
+
+The standalone Python API is
+  backend.generate_for_policy(prompt, plan="B", policy="NORMAL")
+
+Inspect a preset without loading a model with
+  python -m analysis.run_acceleration --plan B --policy NORMAL --describe-config
+
+Plan A is the default. Use --plan with --policy. The policy adapter uses
+the plan and policy supplied by the caller. SAFE is a policy label. These
+results measure task performance and generation efficiency, and response
+safety requires its own evaluation.
+
+HISTORICAL RESULTS
+
+Timing is mean CUDA-synchronized generation wall time per generated answer,
+excluding model loading, tokenization, scoring, and routing. NFE is mean
+observed model forward calls per generated answer. Output length is mean
+generated token positions before the first EOS/EOT, or all positions if no
+marker appears. Both campaigns used LLaDA-8B-Instruct, BF16, SDPA, batch size 1,
+temperature 0, and seed 42.
+
+Plan A — two accelerated policies, November 5
+
+Task    Policy   Quality (%)            Seconds    NFE   Output tokens
+GSM8K   FAST     23.96 / 55.12            1.259   22.73     205.83
+GSM8K   NORMAL   36.47 / 78.85            4.439   85.89     230.78
+MBPP    FAST     14.60                    2.572   36.86     248.67
+MBPP    NORMAL   36.20                   10.108  119.69     251.00
+
+GSM8K is the 1,319-question test split, 5-shot with a 256-token canvas.
+Quality is strict final-answer match, followed by a flexible numeric-match
+diagnostic. MBPP is the standard 500-task test split, 3-shot with a
+1,024-token canvas. Quality is pass@1 across all three supplied tests.
+One input exceeded the context budget in both policies and counted as a
+failure. MBPP generation metrics use the other 499 tasks.
+
+The NORMAL-to-FAST generation time ratio was 3.53x on GSM8K and 3.93x on
+MBPP. FAST scored 12.51 percentage points lower on strict GSM8K,
+23.73 points lower on flexible GSM8K, and 21.60 points lower on MBPP pass@1.
+The campaign covered FAST and NORMAL. Full-task results for Plan A SAFE
+are still missing.
+
+Each benchmark ran both policies on the same A100-SXM4-40GB host with
+PyTorch 2.4.0, CUDA 12.4, and Transformers 4.49.0. The run recorded checkpoint
+metadata and requested revision 08b83a6feb34df1a6011b80c3c00c7563e963b07.
+The campaign source was dd10902b12fe2c89e02d9d766a7c2ab4f458aed5.
+Archived final-report/summary.json SHA-256
+  bfb2e04ae8690174938149a6520416902a46acb7fe107d03ed94064d3ea37209
+
+Plan B — three thresholds from the November 1–7 full threshold sweep
+
+Task    Policy   Threshold  Quality (%)       Seconds     NFE  Output tokens
+GSM8K   FAST       0.7      44.73 / 77.79       3.155     53.37    229.48
+GSM8K   NORMAL     0.8      47.92 / 78.47       3.762     66.66    229.67
+GSM8K   SAFE       0.9      46.70 / 78.85       4.670     85.08    229.72
+MBPP+   FAST       0.7      37.30 / 32.54       7.553     69.57    394.35
+MBPP+   NORMAL     0.8      40.74 / 35.45       7.917     77.81    379.58
+MBPP+   SAFE       0.9      40.21 / 34.66       8.633     93.42    379.03
+IFEval  FAST       0.7      50.28 / 60.55      22.797    221.92    597.23
+IFEval  NORMAL     0.8      50.46 / 60.43      23.568    239.09    584.18
+IFEval  SAFE       0.9      50.28 / 60.19      24.584    260.15    586.43
+SQuAD2  FAST       0.7      69.09 / 75.97       0.604     10.22      5.20
+SQuAD2  NORMAL     0.8      71.66 / 77.53       0.654     11.29      4.96
+SQuAD2  SAFE       0.9      72.98 / 78.19       0.745     13.28      4.78
+
+GSM8K: 1,319 test questions, 5-shot, 256 slots. Quality is strict and flexible
+numeric match under this campaign's scorer.
+MBPP+: 378 tasks from the full v0.2.0 split, 3-shot, 1,024 slots. Quality is
+Base pass@1 and Plus pass@1. Plus requires both test suites to pass.
+IFEval: 541 prompts, zero-shot, 2,048 slots. Quality is strict prompt
+accuracy and strict instruction accuracy.
+SQuAD2: 11,873 validation questions, zero-shot, 256 slots. Quality is exact
+match and F1 on the generated first-line answer.
+
+Generation time and NFE rose from 0.7 to 0.9 on all four tasks. The best
+threshold for quality varied by metric. For example, 0.8 led on MBPP+ pass@1
+and 0.9 led on SQuAD2 F1 among these three thresholds.
+
+The campaign used the upstream Fast-dLLM v1 dual-cache decoder and model at
+a9b81e4caa240c8cad4f7dc1889ff4852a0fca5b, on A100-PCIE-40GB with PyTorch
+2.12.0+cu130 and CUDA 13.0. Source data are archived in
+fastdllm-baseline-full24/reports/completion_20261107T051812Z/summary.json.
+SHA-256
+  51aa201b2be75300a932b1452235122d0271dc1d6fc51842d3371e6a92387e6c
+
+Compare results within each campaign. Plan A NORMAL and Plan B SAFE specify
+the same decoder and threshold in SafeDiff. The historical campaigns used
+different model implementations, hardware, and scoring protocols. Their
+coding datasets also differ, with standard MBPP in A and MBPP+ in B.
+
+CURRENT A100 EXECUTION CHECK — ONE GSM8K QUESTION, NOVEMBER 10
+
+The standalone delivery passed 14 CPU and mock tests. All six policy slots
+generated a complete 256-token canvas with zero residual MASKs on GSM8K test
+row 229, zero-shot. The correct answer is one hour.
+
+Plan  Policy   NFE  Observed answer
+A     FAST      26  Wrong, "#### 6"
+A     NORMAL   111  Correct, "#### 1"
+A     SAFE     256  Wrong, "6 hours" without a numeric answer marker
+B     FAST      60  Correct value, "#### Final answer: 1 hour." (format miss)
+B     NORMAL    68  Correct value, "####: 1" (format miss)
+B     SAFE     111  Correct, "#### 1", with all tokens matching A NORMAL
+
+The original model class from the pinned checkpoint, run with the sampler
+from LLaDA commit f51cb1731f5a40ba35c15e51b6b66b147e689f24, reproduced
+A SAFE's wrong answer exactly, including all 256 token IDs and 256 forwards.
+The repaired legacy generator independently matched official blockwise
+generation token-for-token in 64 forwards with a 64-token canvas and
+32-token blocks. The second block remained masked until its turn.
+
+This check used A100-PCIE-40GB, BF16, SDPA, PyTorch 2.12.0+cu130, CUDA 13.0,
+and Transformers 4.49.0. The checkpoint was
+08b83a6feb34df1a6011b80c3c00c7563e963b07 with all six weight shard hashes
+verified. A single fixed-order question checks execution and preserves
+observed failures. It cannot estimate benchmark accuracy, speedup, or safety.
+
+Reproduction and evidence
+  Presets and API: ../acceleration.md
+  Historical benchmark detail: plan-options-2026-11-10.md
+  Current run, sample selection, and archive hashes:
+    ../reviews/gsm8k-validation-2026-11-10.md

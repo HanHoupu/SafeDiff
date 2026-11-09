@@ -14,7 +14,7 @@ import random
 import threading
 import time
 
-from .presets import describe_config, mode_for_policy
+from .presets import describe_config, describe_policy_config
 
 
 def _json_hash(value):
@@ -219,13 +219,17 @@ class LLaDABackend:
         with self._lock:
             return deepcopy(self._runtime)
 
-    def generate_for_policy(self, prompt, *, policy, gen_length=256, seed=42,
+    def generate_for_policy(self, prompt, *, policy, plan="A", gen_length=256, seed=42,
                             system_prompt=None):
-        """Generate a response using the selected policy."""
-        mode = mode_for_policy(policy)
-        result = self.generate(prompt, mode=mode, gen_length=gen_length,
-                               seed=seed, system_prompt=system_prompt)
-        return {**result, "policy": policy}
+        """Run an explicitly selected Plan A/B preset on the shared model.
+
+        The caller chooses FAST/NORMAL/SAFE before generation. This interface
+        does not change the repository's existing Guard or oracle routing.
+        Returned `config` records the effective strategy, threshold and budget.
+        """
+        config = describe_policy_config(policy, plan=plan, gen_length=gen_length, seed=seed)
+        result = self._generate_with_config(prompt, config, system_prompt=system_prompt)
+        return {**result, "plan": plan, "policy": policy}
 
     def generate(self, prompt, *, mode="instant", gen_length=256, seed=42, system_prompt=None):
         """Generate one response using the requested fixed mode.
@@ -235,10 +239,14 @@ class LLaDABackend:
         setup and decoding.
         """
         config = describe_config(mode, gen_length=gen_length, seed=seed)
+        return self._generate_with_config(prompt, config, system_prompt=system_prompt)
+
+    def _generate_with_config(self, prompt, config, *, system_prompt):
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a nonempty string")
         if system_prompt is not None and not isinstance(system_prompt, str):
             raise ValueError("system_prompt must be a string or None")
+        mode, gen_length, seed = config["mode"], config["gen_length"], config["seed"]
         with self._lock:
             started = time.perf_counter()
             was_loaded = self._model is not None
@@ -268,6 +276,10 @@ class LLaDABackend:
             torch.cuda.manual_seed_all(seed)
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
+            decoder_options = {
+                name: config[name]
+                for name in ("gen_length", "block_length", "temperature", "remasking", "mask_id")
+            }
             observer = _ForwardObserver()
             hook = self._model.register_forward_hook(observer, with_kwargs=True)
             device = self._model.device
@@ -279,24 +291,22 @@ class LLaDABackend:
                 with torch.no_grad():
                     if mode == "instant":
                         full, nfe, details = instant.generate_generic_k(
-                            self._model, inputs, gen_length=gen_length, block_length=32,
-                            parallel_k=8, threshold=0.9, berm_mu=16, max_rounds_per_group=64,
-                            temperature=0.0, mask_id=126336, matmul_spec=self._matmul_spec,
+                            self._model, inputs, **decoder_options,
+                            parallel_k=config["parallel_k"], threshold=config["threshold"],
+                            berm_mu=config["berm_mu"], max_rounds_per_group=config["max_rounds_per_group"],
+                            matmul_spec=self._matmul_spec,
                         )
                     elif mode == "fastdllm":
                         full, nfe = fastdllm.generate_with_dual_cache(
-                            self._model, inputs, steps=gen_length, gen_length=gen_length,
-                            block_length=32, temperature=0.0, remasking="low_confidence",
-                            mask_id=126336, threshold=0.9, factor=None,
+                            self._model, inputs, **decoder_options, steps=config["steps"],
+                            threshold=config["threshold"], factor=config["factor"],
                         )
                     else:
                         full = llada.generate(
-                            _UncachedModel(self._model), inputs,
-                            steps=gen_length, gen_length=gen_length,
-                            block_length=gen_length, temperature=0.0,
-                            cfg_scale=0.0, remasking="low_confidence", mask_id=126336,
+                            _UncachedModel(self._model), inputs, **decoder_options,
+                            steps=config["steps"], cfg_scale=config["cfg_scale"],
                         )
-                        nfe = gen_length
+                        nfe = config["steps"]
                 torch.cuda.synchronize(device)
                 elapsed = time.perf_counter() - generation_start
                 peak_memory = int(torch.cuda.max_memory_allocated(device))

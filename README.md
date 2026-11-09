@@ -6,18 +6,20 @@ SafeDiff is a research prototype investigating whether the internal denoising tr
 
 ### Acceleration backends
 
-The standalone generation API provides three fixed LLaDA-8B-Instruct policies:
+Choose one of two plans, then select a FAST, NORMAL or SAFE policy:
 
-| Policy | Mode | Generation path |
+| Policy | Plan A (default): switch generation strategy | Plan B: vary Fast-dLLM threshold |
 |---|---|---|
-| `FAST` | `instant` | Contiguous ALL8 acceleration |
-| `NORMAL` | `fastdllm` | Pinned official Fast-dLLM v1 dual-cache decoder |
-| `SAFE` | `llada` | Pinned original LLaDA decoder, full generation canvas, one step per output token, no cache |
+| `FAST` | Contiguous ALL8, threshold 0.9 | Dual-cache, threshold 0.7 |
+| `NORMAL` | Fast-dLLM dual-cache, threshold 0.9 | Dual-cache, threshold 0.8 |
+| `SAFE` | Original LLaDA decoder, full generation canvas, one step per output token, no cache | Dual-cache, threshold 0.9 |
 
-All three use a shared extended model and return responses, exact configurations,
-observed model-call counts, timing, and source provenance. The policy adapter
-resolves the caller's selected policy to a decoder; risk estimation and policy
-selection are handled by the controller.
+All policies use a shared extended model and return responses, exact configurations,
+observed model-call counts, timing, and source provenance. The standalone API
+and CLI resolve the plan and policy supplied by the caller. SafeDiff's existing
+routing scripts remain separate, and any future controller integration needs
+to pass its policy explicitly. SAFE names a configuration whose safety needs
+separate evaluation.
 
 See [the acceleration guide](docs/acceleration.md) for the Python API, paired
 input runner, dependency setup, and measurement definitions. Inspect the presets
@@ -26,9 +28,16 @@ without loading a model:
 ```bash
 python -m analysis.run_acceleration --mode compare-all --describe-config
 python -m analysis.run_acceleration --policy SAFE --describe-config
+python -m analysis.run_acceleration --plan B --policy NORMAL --describe-config
 ```
 
-`compare` runs the two acceleration modes.
+Use `--plan` with `--policy`. The direct `--mode` interface is unchanged.
+`compare` runs ALL8 and Fast-dLLM dual-cache at threshold 0.9. Use the policy
+interface to test the three Plan B thresholds. See the
+[historical results](docs/benchmarks/plan-options-2026-11-10.md) for the
+benchmark scope and observed tradeoffs.
+The same results are available as a standalone
+[English benchmark TXT](docs/benchmarks/plan-ab-benchmark-results-2026-11-10.txt).
 
 ### Research Question
 

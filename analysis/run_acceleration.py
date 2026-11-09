@@ -13,7 +13,9 @@ from pathlib import Path
 import sys
 import uuid
 
-from acceleration.presets import MODES, POLICIES, describe_config, mode_for_policy
+from acceleration.presets import (
+    MODES, PLANS, POLICIES, describe_config, describe_policy_config, mode_for_policy,
+)
 
 
 PROMPT_FIELDS = ("text", "prompt", "vanilla prompt")
@@ -119,7 +121,9 @@ def build_parser() -> argparse.ArgumentParser:
     selection.add_argument("--mode", choices=(*MODES, "compare", "compare-all"), default="instant",
                            help="compare retains the two acceleration modes; compare-all also includes vanilla LLaDA")
     selection.add_argument("--policy", choices=POLICIES,
-                           help="Explicit preset: FAST=instant, NORMAL=fastdllm, SAFE=vanilla llada")
+                           help="FAST, NORMAL or SAFE within the selected plan")
+    parser.add_argument("--plan", choices=PLANS,
+                        help="With --policy: A switches decoders (default); B uses thresholds 0.7/0.8/0.9")
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--prompt", help="One literal user prompt")
     source.add_argument("--input", help="JSON object/list or JSONL, with text/prompt/vanilla prompt")
@@ -139,7 +143,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def selected_modes(args):
     if args.policy is not None:
-        return (mode_for_policy(args.policy),)
+        return (mode_for_policy(args.policy, plan=args.plan or "A"),)
+    if args.plan is not None:
+        raise ValueError("--plan requires --policy; --mode selects a decoder directly")
     if args.mode == "compare":
         return LEGACY_COMPARE_MODES
     if args.mode == "compare-all":
@@ -147,12 +153,23 @@ def selected_modes(args):
     return (args.mode,)
 
 
+def selected_configs(args):
+    # --plan chooses a preset family; --policy chooses one of its three tiers.
+    # --mode remains a direct decoder interface and must not silently ignore a plan.
+    modes = selected_modes(args)
+    if args.policy is not None:
+        return {modes[0]: describe_policy_config(
+            args.policy, plan=args.plan or "A", gen_length=args.gen_length, seed=args.seed,
+        )}
+    return {mode: describe_config(mode, gen_length=args.gen_length, seed=args.seed)
+            for mode in modes}
+
+
 def run_jobs(args, records: list[dict], *, backend_factory=None) -> int:
     if not args.output:
         raise ValueError("--output is required for generation")
-    modes = selected_modes(args)
-    for mode in modes:
-        describe_config(mode, gen_length=args.gen_length, seed=args.seed)
+    configs = selected_configs(args)
+    modes = tuple(configs)
     if backend_factory is None:
         from acceleration import LLaDABackend
         backend_factory = LLaDABackend
@@ -178,11 +195,14 @@ def run_jobs(args, records: list[dict], *, backend_factory=None) -> int:
                 }
                 if args.policy is not None:
                     result["policy"] = args.policy
+                    result["plan"] = args.plan or "A"
                 try:
                     options = {"gen_length": args.gen_length, "seed": args.seed,
                                "system_prompt": args.system_prompt}
                     if args.policy is not None:
-                        generation = backend.generate_for_policy(record["prompt"], policy=args.policy, **options)
+                        generation = backend.generate_for_policy(
+                            record["prompt"], policy=args.policy, plan=args.plan or "A", **options,
+                        )
                     else:
                         generation = backend.generate(record["prompt"], mode=mode, **options)
                 except Exception as exc:
@@ -212,11 +232,12 @@ def main(argv=None, *, backend_factory=None) -> int:
         if args.gen_length <= 0:
             raise ValueError("--gen-length must be positive")
         # describe_config validates backend restrictions before opening an output.
-        modes = selected_modes(args)
-        configs = {mode: describe_config(mode, gen_length=args.gen_length, seed=args.seed)
-                   for mode in modes}
+        configs = selected_configs(args)
         if args.describe_config:
-            description = configs if args.policy is None else {"policy": args.policy, "mode": modes[0], "config": configs[modes[0]]}
+            description = configs if args.policy is None else {
+                "plan": args.plan or "A", "policy": args.policy,
+                "mode": next(iter(configs)), "config": next(iter(configs.values())),
+            }
             print(json.dumps(description, ensure_ascii=False, indent=2, allow_nan=False))
             return 0
         records = load_records(input_path=args.input, prompt=args.prompt)
